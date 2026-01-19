@@ -157,7 +157,7 @@
           :fileList="fileList"
           :max-count="1"
           accept=".jsonl"
-          action="/api/knowledge/files/upload?allow_jsonl=true"
+          action="/api/knowledge/files/upload?allow_jsonl=true&db_id=neo4j"
           :headers="getAuthHeaders()"
           @change="handleFileUpload"
           @drop="handleDrop"
