@@ -312,8 +312,13 @@ class MinIOClient:
         # 验证主机
         endpoint_host = self.endpoint.split("://")[-1].split(":")[0]
         url_host = parsed.netloc.split(":")[0]
+        host_ip = (os.environ.get("HOST_IP") or "").strip() or "localhost"
 
-        if endpoint_host != url_host and url_host != os.environ.get("HOST_IP", "localhost"):
+        # 允许的来源：
+        # - MinIO 内部 endpoint_host（容器内访问）
+        # - HOST_IP（外部访问时的公开地址，可能用于前端回传）
+        # - localhost/127.0.0.1（开发环境/默认值）
+        if endpoint_host != url_host and url_host not in {host_ip, "localhost", "127.0.0.1"}:
             raise StorageError(f"不允许的外部 URL: {url_host}")
 
         # 检查路径遍历
