@@ -1070,9 +1070,14 @@ async def upload_file(
     ext = os.path.splitext(file.filename)[1].lower()
 
     if ext == ".jsonl":
-        # `.jsonl` is only supported for graph import flows (Upload graph / Neo4j),
-        # which may optionally pass `db_id=neo4j` to scope storage.
-        if allow_jsonl is not True or (db_id is not None and db_id != "neo4j"):
+        # `.jsonl` is only supported for graph import flows (Upload graph / Neo4j).
+        # It may optionally pass `db_id` to scope storage:
+        # - db_id is None: behave like the original flow (default bucket)
+        # - db_id == "neo4j": scope to a dedicated bucket
+        # - db_id is an existing knowledge base id: scope to that KB bucket
+        if allow_jsonl is not True:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
+        if db_id is not None and db_id != "neo4j" and knowledge_base.get_database_info(db_id) is None:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
     elif not (is_supported_file_extension(file.filename) or ext == ".zip"):
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")

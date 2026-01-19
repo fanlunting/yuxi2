@@ -125,6 +125,17 @@
         </div>
         <div class="upload-config">
           <div class="config-row">
+            <label class="config-label">知识库</label>
+            <div class="config-field">
+              <a-input
+                v-model:value="state.graphUploadDbId"
+                placeholder="默认：不绑定（不带 db_id）"
+                :disabled="state.processing"
+              />
+            </div>
+          </div>
+          <div class="config-hint-row">db.type = 该输入框的 value（仅用于前端展示）</div>
+          <div class="config-row">
             <label class="config-label">嵌入模型</label>
             <div class="config-field">
               <EmbeddingModelSelector
@@ -157,7 +168,7 @@
           :fileList="fileList"
           :max-count="1"
           accept=".jsonl"
-          action="/api/knowledge/files/upload?allow_jsonl=true&db_id=neo4j"
+          :action="graphUploadAction"
           :headers="getAuthHeaders()"
           @change="handleFileUpload"
           @drop="handleDrop"
@@ -197,7 +208,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, h } from 'vue'
+import { computed, onMounted, reactive, ref, h, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useConfigStore } from '@/stores/config'
@@ -252,11 +263,21 @@ const state = reactive({
   dbOptions: [],
   lightragStats: null,
   embedModelName: '',
-  batchSize: 40
+  batchSize: 40,
+  // 图谱导入上传时绑定的知识库（作为 db_id 传给上传接口）
+  // 为空时保持原行为：不带 db_id（即默认桶）
+  graphUploadDbId: ''
 })
 
 const isNeo4j = computed(() => {
   return state.selectedDbId === 'neo4j'
+})
+
+const graphUploadAction = computed(() => {
+  const base = '/api/knowledge/files/upload?allow_jsonl=true'
+  const dbId = (state.graphUploadDbId || '').trim()
+  if (!dbId) return base
+  return `${base}&db_id=${encodeURIComponent(dbId)}`
 })
 
 const embedModelConfigurable = computed(() => {
@@ -292,11 +313,18 @@ const loadDatabases = async () => {
   try {
     const res = await unifiedApi.getGraphs()
     if (res.success && res.data) {
-      state.dbOptions = res.data.map((db) => ({
-        label: `${db.name} (${db.type})`,
-        value: db.id,
-        type: db.type
-      }))
+      state.dbOptions = res.data.map((db) => {
+        // 支持图谱导入弹窗里“知识库”输入框覆盖 neo4j 的 type 展示
+        const overrideType =
+          db.id === 'neo4j' && (state.graphUploadDbId || '').trim()
+            ? (state.graphUploadDbId || '').trim()
+            : db.type
+        return {
+          label: `${db.name} (${overrideType})`,
+          value: db.id,
+          type: overrideType
+        }
+      })
 
       // If no selection or invalid selection, select first
       if (!state.selectedDbId || !state.dbOptions.find((o) => o.value === state.selectedDbId)) {
@@ -326,6 +354,24 @@ const handleDbChange = () => {
   }
   loadSampleNodes()
 }
+
+// db.type = “知识库”输入框的 value（仅影响 neo4j 这一条在前端的展示）
+const syncNeo4jOptionType = () => {
+  const neo4jOption = state.dbOptions.find((o) => o.value === 'neo4j')
+  if (!neo4jOption) return
+  const v = (state.graphUploadDbId || '').trim()
+  const nextType = v || 'upload'
+  const baseName = neo4jOption.label.replace(/\s*\([^)]+\)\s*$/, '')
+  neo4jOption.type = nextType
+  neo4jOption.label = `${baseName} (${nextType})`
+}
+
+watch(
+  () => state.graphUploadDbId,
+  () => {
+    syncNeo4jOptionType()
+  }
+)
 
 const loadLightRAGStats = () => {
   unifiedApi
