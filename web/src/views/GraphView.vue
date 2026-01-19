@@ -28,14 +28,14 @@
         <!-- <a-button type="default" @click="openLink('http://localhost:7474/')" :icon="h(GlobalOutlined)">
           Neo4j 浏览器
         </a-button> -->
-        <a-button v-if="isNeo4j" type="primary" @click="state.showModal = true"
+        <a-button v-if="isUploadGraph" type="primary" @click="state.showModal = true"
           ><UploadOutlined /> 上传文件</a-button
         >
         <a-button v-else type="primary" @click="state.showUploadTipModal = true"
           ><UploadOutlined /> 上传文件</a-button
         >
         <a-button
-          v-if="unindexedCount > 0"
+          v-if="state.selectedDbId === 'neo4j' && unindexedCount > 0"
           type="primary"
           @click="indexNodes"
           :loading="state.indexing"
@@ -157,7 +157,7 @@
           :fileList="fileList"
           :max-count="1"
           accept=".jsonl"
-          action="/api/knowledge/files/upload?allow_jsonl=true"
+          :action="uploadAction"
           :headers="getAuthHeaders()"
           @change="handleFileUpload"
           @drop="handleDrop"
@@ -183,7 +183,7 @@
           show-icon
           style="margin-bottom: 16px"
         />
-        <div v-if="!isNeo4j" class="upload-tip-actions">
+        <div v-if="!isUploadGraph" class="upload-tip-actions">
           <p>如需上传文档到当前选中的知识库，请前往对应的知识库详情页面进行操作：</p>
           <div class="action-buttons">
             <a-button type="primary" @click="goToDatabasePage">
@@ -250,13 +250,37 @@ const state = reactive({
   showPage: true,
   selectedDbId: 'neo4j',
   dbOptions: [],
-  lightragStats: null,
+  currentStats: null,
   embedModelName: '',
   batchSize: 40
 })
 
-const isNeo4j = computed(() => {
-  return state.selectedDbId === 'neo4j'
+const selectedDbOption = computed(() => {
+  return state.dbOptions.find((o) => o.value === state.selectedDbId) || null
+})
+
+const isUploadGraph = computed(() => {
+  // 默认图谱 id=neo4j；隔离上传图谱 id=upload:<kb_id>
+  if (state.selectedDbId === 'neo4j') return true
+  if (typeof state.selectedDbId === 'string' && state.selectedDbId.startsWith('upload:')) return true
+  return selectedDbOption.value?.type === 'upload'
+})
+
+const kbIdForUploadGraph = computed(() => {
+  if (typeof state.selectedDbId !== 'string') return null
+  if (state.selectedDbId.startsWith('upload:')) {
+    return state.selectedDbId.split(':', 2)[1] || null
+  }
+  return null
+})
+
+const uploadAction = computed(() => {
+  // 上传 JSONL：默认图谱上传到 default-uploads；隔离图谱上传到对应 ref-<db_id> bucket
+  const kbId = kbIdForUploadGraph.value
+  if (kbId) {
+    return `/api/knowledge/files/upload?db_id=${encodeURIComponent(kbId)}&allow_jsonl=true`
+  }
+  return '/api/knowledge/files/upload?allow_jsonl=true'
 })
 
 const embedModelConfigurable = computed(() => {
@@ -274,15 +298,10 @@ const unindexedCount = computed(() => {
 })
 
 const formattedGraphInfo = computed(() => {
-  if (isNeo4j.value) {
+  if (isUploadGraph.value) {
     return {
-      node_count: graphInfo.value?.entity_count || 0,
-      edge_count: graphInfo.value?.relationship_count || 0
-    }
-  } else {
-    return {
-      node_count: state.lightragStats?.total_nodes || 0,
-      edge_count: state.lightragStats?.total_edges || 0
+      node_count: state.currentStats?.total_nodes || 0,
+      edge_count: state.currentStats?.total_edges || 0
     }
   }
 })
@@ -316,23 +335,21 @@ const handleDbChange = () => {
   // Clear current data
   graph.clearGraph()
   state.searchInput = ''
-  state.lightragStats = null
+  state.currentStats = null
 
-  if (isNeo4j.value) {
+  if (isUploadGraph.value) {
     loadGraphInfo()
-  } else {
-    // Also load stats for LightRAG or KB
-    loadLightRAGStats()
   }
+  loadCurrentStats()
   loadSampleNodes()
 }
 
-const loadLightRAGStats = () => {
+const loadCurrentStats = () => {
   unifiedApi
     .getStats(state.selectedDbId)
     .then((res) => {
       if (res.success) {
-        state.lightragStats = res.data
+        state.currentStats = res.data
       }
     })
     .catch((e) => console.error(e))
@@ -388,7 +405,7 @@ const addDocumentByFile = () => {
   }
 
   neo4jApi
-    .addEntities(filePath, 'neo4j', state.embedModelName, state.batchSize)
+    .addEntities(filePath, 'neo4j', state.embedModelName, state.batchSize, kbIdForUploadGraph.value)
     .then((data) => {
       if (data.status === 'success') {
         message.success(data.message)
@@ -398,6 +415,7 @@ const addDocumentByFile = () => {
         // 刷新图谱数据
         setTimeout(() => {
           loadGraphInfo()
+          loadCurrentStats()
           loadSampleNodes()
         }, 500)
       } else {
@@ -439,7 +457,7 @@ const onSearch = () => {
     return
   }
 
-  if (isNeo4j.value && graphInfo?.value?.embed_model_name !== cur_embed_model.value) {
+  if (isUploadGraph.value && graphInfo?.value?.embed_model_name !== cur_embed_model.value) {
     // 可选：提示模型不一致
   }
 
@@ -473,6 +491,7 @@ const onSearch = () => {
 onMounted(async () => {
   await loadDatabases()
   loadGraphInfo() // Load default (Neo4j) info
+  loadCurrentStats()
   loadSampleNodes()
 })
 
@@ -552,7 +571,7 @@ const exportGraphData = () => {
     {
       nodes: graph.graphData.nodes,
       edges: graph.graphData.edges,
-      graphInfo: isNeo4j.value ? graphInfo.value : state.lightragStats,
+      graphInfo: isUploadGraph.value ? graphInfo.value : state.currentStats,
       source: state.selectedDbId,
       exportTime: new Date().toISOString()
     },
@@ -588,7 +607,7 @@ const getDatabaseName = () => {
 }
 
 const getUploadTipMessage = () => {
-  if (isNeo4j.value) {
+  if (isUploadGraph.value) {
     return 'Neo4j 图数据库支持通过上传 JSONL 格式文件直接导入实体和关系数据。'
   } else {
     const selectedDb = state.dbOptions.find((db) => db.value === state.selectedDbId)
@@ -602,7 +621,7 @@ const goToDatabasePage = () => {
   state.showUploadTipModal = false
 
   // 如果不是 Neo4j，需要找到对应的知识库 ID 并跳转
-  if (!isNeo4j.value) {
+  if (!isUploadGraph.value) {
     const selectedDb = state.dbOptions.find((db) => db.value === state.selectedDbId)
     if (selectedDb && selectedDb.type !== 'neo4j') {
       // 跳转到对应的知识库详情页面

@@ -1070,7 +1070,9 @@ async def upload_file(
     ext = os.path.splitext(file.filename)[1].lower()
 
     if ext == ".jsonl":
-        if allow_jsonl is not True or db_id is not None:
+        # JSONL 默认不作为普通知识库文档处理，仅在显式允许时开放上传
+        # 允许携带 db_id（用于图谱上传/隔离存储桶）
+        if allow_jsonl is not True:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
     elif not (is_supported_file_extension(file.filename) or ext == ".zip"):
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")

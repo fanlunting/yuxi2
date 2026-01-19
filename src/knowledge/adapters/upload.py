@@ -41,14 +41,16 @@ class UploadGraphAdapter(GraphAdapter):
 
     async def query_nodes(self, keyword: str, **kwargs) -> dict[str, Any]:
         params = self._normalize_query_params(keyword, kwargs)
+        kb_id = self.config.get("kb_id")
 
         # 如果关键词是 "*" 或者为空，则执行采样查询
         if not params["keyword"] or params["keyword"] == "*":
             # 使用 BaseNeo4jAdapter 的连通子图查询
             num = kwargs.get("max_nodes", 100)
+            label_filter = kb_id or "Upload"
             raw_results = self._db._get_sample_nodes_with_connections(
                 num=num,
-                label_filter="Upload",
+                label_filter=label_filter,
             )
         else:
             # 否则执行关键词搜索（使用 service 的查询功能）
@@ -56,6 +58,7 @@ class UploadGraphAdapter(GraphAdapter):
                 keyword=params["keyword"],
                 threshold=params.get("threshold", 0.9),
                 kgdb_name=params.get("kgdb_name", "neo4j"),
+                kb_id=kb_id,
                 hops=params.get("hops", 2),
                 return_format="graph",
             )
@@ -100,6 +103,16 @@ class UploadGraphAdapter(GraphAdapter):
         kgdb_name = self.config.get("kgdb_name", "neo4j")
         info = self.service.get_graph_info(graph_name=kgdb_name)
         return info.get("labels", []) if info else []
+
+    async def get_stats(self, **kwargs) -> dict[str, Any]:
+        """
+        获取统计信息
+        - 默认图谱：只统计 Upload 标签
+        - KB 隔离图谱：统计 kb_id 标签（节点在导入时会带上该 label）
+        """
+        kb_id = self.config.get("kb_id")
+        label_filter = kb_id or "Upload"
+        return self._db._get_graph_stats(label_filter=label_filter)
 
     def _normalize_query_params(self, keyword: str, kwargs: dict) -> dict[str, Any]:
         # Map max_depth to hops if present
