@@ -12,7 +12,8 @@ WORKDIR /app
 # 环境变量设置
 ENV TZ=Asia/Shanghai \
     UV_PROJECT_ENVIRONMENT="/usr/local" \
-    UV_COMPILE_BYTECODE=1 \
+    UV_COMPILE_BYTECODE=0 \
+    UV_LINK_MODE=copy \
     DEBIAN_FRONTEND=noninteractive
 
 RUN npm install -g npm@latest && npm cache clean --force
