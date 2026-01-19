@@ -53,7 +53,7 @@ services:
       # postgres:
       #   condition: service_healthy
       milvus:
-        condition: service_healthy
+        condition: service_started
       minio:
         condition: service_healthy
 
@@ -164,12 +164,6 @@ services:
     volumes:
       - ./docker/volumes/milvus/milvus:/var/lib/milvus
       - ./docker/volumes/milvus/logs:/var/lib/milvus/logs
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 60s
-      start_period: 120s
-      timeout: 30s
-      retries: 5
     ports:
       - "19530:19530"
       - "9091:9091"
