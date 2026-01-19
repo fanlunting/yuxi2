@@ -28,7 +28,7 @@
         <!-- <a-button type="default" @click="openLink('http://localhost:7474/')" :icon="h(GlobalOutlined)">
           Neo4j 浏览器
         </a-button> -->
-        <a-button v-if="isNeo4j" type="primary" @click="state.showModal = true"
+        <a-button v-if="isUploadGraph" type="primary" @click="state.showModal = true"
           ><UploadOutlined /> 上传文件</a-button
         >
         <a-button v-else type="primary" @click="state.showUploadTipModal = true"
@@ -194,7 +194,7 @@
           show-icon
           style="margin-bottom: 16px"
         />
-        <div v-if="!isNeo4j" class="upload-tip-actions">
+        <div v-if="!isUploadGraph" class="upload-tip-actions">
           <p>如需上传文档到当前选中的知识库，请前往对应的知识库详情页面进行操作：</p>
           <div class="action-buttons">
             <a-button type="primary" @click="goToDatabasePage">
@@ -273,6 +273,10 @@ const isNeo4j = computed(() => {
   return state.selectedDbId === 'neo4j'
 })
 
+const isUploadGraph = computed(() => {
+  return state.selectedDbId === 'neo4j' || (state.selectedDbId || '').startsWith('upload:')
+})
+
 const graphUploadAction = computed(() => {
   const base = '/api/knowledge/files/upload?allow_jsonl=true'
   const dbId = (state.graphUploadDbId || '').trim()
@@ -295,7 +299,7 @@ const unindexedCount = computed(() => {
 })
 
 const formattedGraphInfo = computed(() => {
-  if (isNeo4j.value) {
+  if (isUploadGraph.value) {
     return {
       node_count: graphInfo.value?.entity_count || 0,
       edge_count: graphInfo.value?.relationship_count || 0
@@ -346,7 +350,7 @@ const handleDbChange = () => {
   state.searchInput = ''
   state.lightragStats = null
 
-  if (isNeo4j.value) {
+  if (isUploadGraph.value) {
     loadGraphInfo()
   } else {
     // Also load stats for LightRAG or KB
@@ -433,8 +437,9 @@ const addDocumentByFile = () => {
     return
   }
 
+  const namespace = (state.graphUploadDbId || '').trim() || null
   neo4jApi
-    .addEntities(filePath, 'neo4j', state.embedModelName, state.batchSize)
+    .addEntities(filePath, 'neo4j', state.embedModelName, state.batchSize, namespace)
     .then((data) => {
       if (data.status === 'success') {
         message.success(data.message)
@@ -485,7 +490,7 @@ const onSearch = () => {
     return
   }
 
-  if (isNeo4j.value && graphInfo?.value?.embed_model_name !== cur_embed_model.value) {
+  if (isUploadGraph.value && graphInfo?.value?.embed_model_name !== cur_embed_model.value) {
     // 可选：提示模型不一致
   }
 
@@ -598,7 +603,7 @@ const exportGraphData = () => {
     {
       nodes: graph.graphData.nodes,
       edges: graph.graphData.edges,
-      graphInfo: isNeo4j.value ? graphInfo.value : state.lightragStats,
+      graphInfo: isUploadGraph.value ? graphInfo.value : state.lightragStats,
       source: state.selectedDbId,
       exportTime: new Date().toISOString()
     },
@@ -634,7 +639,7 @@ const getDatabaseName = () => {
 }
 
 const getUploadTipMessage = () => {
-  if (isNeo4j.value) {
+  if (isUploadGraph.value) {
     return 'Neo4j 图数据库支持通过上传 JSONL 格式文件直接导入实体和关系数据。'
   } else {
     const selectedDb = state.dbOptions.find((db) => db.value === state.selectedDbId)
@@ -648,7 +653,7 @@ const goToDatabasePage = () => {
   state.showUploadTipModal = false
 
   // 如果不是 Neo4j，需要找到对应的知识库 ID 并跳转
-  if (!isNeo4j.value) {
+  if (!isUploadGraph.value) {
     const selectedDb = state.dbOptions.find((db) => db.value === state.selectedDbId)
     if (selectedDb && selectedDb.type !== 'neo4j') {
       // 跳转到对应的知识库详情页面

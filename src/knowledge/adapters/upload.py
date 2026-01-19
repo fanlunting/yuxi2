@@ -41,6 +41,8 @@ class UploadGraphAdapter(GraphAdapter):
 
     async def query_nodes(self, keyword: str, **kwargs) -> dict[str, Any]:
         params = self._normalize_query_params(keyword, kwargs)
+        namespace = self.config.get("namespace")
+        namespace_label = self.service._get_namespace_label(namespace) if namespace else None
 
         # 如果关键词是 "*" 或者为空，则执行采样查询
         if not params["keyword"] or params["keyword"] == "*":
@@ -48,7 +50,7 @@ class UploadGraphAdapter(GraphAdapter):
             num = kwargs.get("max_nodes", 100)
             raw_results = self._db._get_sample_nodes_with_connections(
                 num=num,
-                label_filter="Upload",
+                label_filter=namespace_label or "Upload",
             )
         else:
             # 否则执行关键词搜索（使用 service 的查询功能）
@@ -58,6 +60,7 @@ class UploadGraphAdapter(GraphAdapter):
                 kgdb_name=params.get("kgdb_name", "neo4j"),
                 hops=params.get("hops", 2),
                 return_format="graph",
+                namespace=namespace,
             )
 
         return self._format_results(raw_results)

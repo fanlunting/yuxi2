@@ -184,6 +184,8 @@ import { useUserStore } from '@/stores/user'
 import { useDatabaseStore } from '@/stores/database'
 import { ocrApi } from '@/apis/system_api'
 import { fileApi, documentApi } from '@/apis/knowledge_api'
+import { neo4jApi } from '@/apis/graph_api'
+import { useConfigStore } from '@/stores/config'
 import { CheckCircleFilled, ReloadOutlined } from '@ant-design/icons-vue'
 import { FileUp, FolderUp, RotateCw, CircleHelp, Info, Download, Trash2 } from 'lucide-vue-next'
 import { h } from 'vue'
@@ -211,6 +213,7 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'success'])
 
 const store = useDatabaseStore()
+const configStore = useConfigStore()
 
 // 文件夹选择相关
 const selectedFolderId = ref(null)
@@ -298,7 +301,8 @@ const isSupportedExtension = (fileName) => {
     return false
   }
   const ext = fileName.slice(lastDotIndex).toLowerCase()
-  return supportedFileTypes.value.includes(ext) || ext === '.zip'
+  // `.jsonl` is a special type for graph import, not included in supported-types list.
+  return supportedFileTypes.value.includes(ext) || ext === '.zip' || ext === '.jsonl'
 }
 
 const loadSupportedFileTypes = async () => {
@@ -692,7 +696,11 @@ const customRequest = async (options) => {
   }
 
   const xhr = new XMLHttpRequest()
-  xhr.open('POST', `/api/knowledge/files/upload?db_id=${dbId}`)
+  const isJsonl = (file?.name || '').toLowerCase().endsWith('.jsonl')
+  const uploadUrl = isJsonl
+    ? `/api/knowledge/files/upload?allow_jsonl=true&db_id=${encodeURIComponent(dbId)}`
+    : `/api/knowledge/files/upload?db_id=${encodeURIComponent(dbId)}`
+  xhr.open('POST', uploadUrl)
 
   const headers = getAuthHeaders()
   for (const [key, value] of Object.entries(headers)) {
@@ -792,12 +800,38 @@ const chunkData = async () => {
   }
 
   let success = false
-  const files = fileList.value
-    .filter((file) => file.status === 'done')
-    .map((file) => file.response?.file_path)
+  const doneFiles = fileList.value.filter((file) => file.status === 'done')
+  const jsonlFiles = doneFiles.filter((file) => (file?.name || '').toLowerCase().endsWith('.jsonl'))
+  const normalFiles = doneFiles.filter((file) => !(file?.name || '').toLowerCase().endsWith('.jsonl'))
+
+  // Graph import: `.jsonl` goes to Neo4j upload graph namespace (isolated by KB name)
+  if (jsonlFiles.length > 0) {
+    const namespace = store.database?.name || (databaseId.value || '')
+    const embedModelName = configStore.config?.embed_model || null
+    try {
+      store.state.chunkLoading = true
+      for (const f of jsonlFiles) {
+        const filePath = f.response?.file_path
+        if (!filePath) continue
+        await neo4jApi.addEntities(filePath, 'neo4j', embedModelName, 40, namespace)
+      }
+    } finally {
+      store.state.chunkLoading = false
+    }
+  }
+
+  const files = normalFiles.map((file) => file.response?.file_path)
   // 过滤掉 undefined 或 null 的文件路径
   const validFiles = files.filter((file) => file)
   if (validFiles.length === 0) {
+    // If user only uploaded jsonl and it has been imported, treat as success
+    if (jsonlFiles.length > 0) {
+      emit('success')
+      handleCancel()
+      fileList.value = []
+      sameNameFiles.value = []
+      return
+    }
     message.error('请先上传文件')
     return
   }
