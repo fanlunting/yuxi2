@@ -76,18 +76,35 @@ class UploadGraphService:
 
     def use_database(self, kgdb_name="neo4j"):
         """切换到指定数据库"""
-        assert kgdb_name == self.kgdb_name, (
-            f"传入的数据库名称 '{kgdb_name}' 与当前实例的数据库名称 '{self.kgdb_name}' 不一致"
-        )
         if self.status == "closed":
             self.start()
 
-    async def jsonl_file_add_entity(self, file_path, kgdb_name="neo4j", embed_model_name=None, batch_size=None):
+    @staticmethod
+    def _sanitize_label(label: str | None) -> str | None:
+        """
+        Neo4j label 仅允许字母/数字/下划线（这里做最小安全过滤）
+        """
+        if not label:
+            return None
+        if not all(c.isalnum() or c == "_" for c in label):
+            logger.warning(f"Invalid label: {label}")
+            return None
+        return label
+
+    async def jsonl_file_add_entity(
+        self,
+        file_path,
+        kgdb_name="neo4j",
+        kb_id: str | None = None,
+        embed_model_name=None,
+        batch_size=None,
+    ):
         """从JSONL文件添加实体三元组到Neo4j"""
         assert self.driver is not None, "Database is not connected"
         self.connection.status = "processing"
         kgdb_name = kgdb_name or "neo4j"
         self.use_database(kgdb_name)  # 切换到指定数据库
+        kb_label = self._sanitize_label(kb_id)
         logger.info(f"Start adding entity to {kgdb_name} with {file_path}")
 
         # 检测 file_path 是否是 URL
@@ -110,7 +127,9 @@ class UploadGraphService:
                                     yield json.loads(line.strip())
 
                     triples = list(read_triples(actual_file_path))
-                    await self.txt_add_vector_entity(triples, kgdb_name, embed_model_name, batch_size)
+                    await self.txt_add_vector_entity(
+                        triples, kgdb_name, kb_label=kb_label, embed_model_name=embed_model_name, batch_size=batch_size
+                    )
                     # 退出 with 块后，临时文件自动清理
 
             else:
@@ -127,10 +146,14 @@ class UploadGraphService:
         self.save_graph_info()
         return kgdb_name
 
-    async def txt_add_vector_entity(self, triples, kgdb_name="neo4j", embed_model_name=None, batch_size=None):
+    async def txt_add_vector_entity(
+        self, triples, kgdb_name="neo4j", kb_label: str | None = None, embed_model_name=None, batch_size=None
+    ):
         """添加实体三元组"""
         assert self.driver is not None, "Database is not connected"
         self.use_database(kgdb_name)
+        kb_label = self._sanitize_label(kb_label)
+        label_clause = f":`{kb_label}`" if kb_label else ""
 
         def _index_exists(tx, index_name):
             """检查索引是否存在"""
@@ -167,10 +190,10 @@ class UploadGraphService:
                     continue
 
                 tx.run(
-                    """
-                MERGE (h:Entity:Upload {name: $h_name})
+                    f"""
+                MERGE (h:Entity:Upload{label_clause} {{name: $h_name}})
                 SET h += $h_props
-                MERGE (t:Entity:Upload {name: $t_name})
+                MERGE (t:Entity:Upload{label_clause} {{name: $t_name}})
                 SET t += $t_props
                 MERGE (h)-[r:RELATION {type: $r_type}]->(t)
                 SET r += $r_props
@@ -211,7 +234,7 @@ class UploadGraphService:
             # 执行查询
             result = tx.run(
                 f"""
-            MATCH (n:Entity)
+            MATCH (n:Entity{label_clause})
             WHERE n.name IN [{param_placeholders}] AND n.embedding IS NULL
             RETURN n.name AS name
             """,
@@ -224,8 +247,8 @@ class UploadGraphService:
             """批量设置实体的嵌入向量"""
             for entity_name, embedding in entity_embedding_pairs:
                 tx.run(
-                    """
-                MATCH (e:Entity {name: $name})
+                    f"""
+                MATCH (e:Entity{label_clause} {{name: $name}})
                 CALL db.create.setNodeVectorProperty(e, 'embedding', $embedding)
                 """,
                     name=entity_name,
@@ -299,12 +322,13 @@ class UploadGraphService:
             # 数据添加完成后保存图信息
             self.save_graph_info()
 
-    async def add_embedding_to_nodes(self, node_names=None, kgdb_name="neo4j", batch_size=None):
+    async def add_embedding_to_nodes(self, node_names=None, kgdb_name="neo4j", kb_id: str | None = None, batch_size=None):
         """为节点添加嵌入向量
 
         Args:
             node_names (list, optional): 要添加嵌入向量的节点名称列表，None表示所有没有嵌入向量的节点
             kgdb_name (str, optional): 图数据库名称，默认为'neo4j'
+            kb_id (str, optional): 标签过滤（用于图谱隔离），例如 "kb_xxx"
             batch_size (int, optional): 嵌入批次大小
 
         Returns:
@@ -312,17 +336,18 @@ class UploadGraphService:
         """
         assert self.driver is not None, "Database is not connected"
         self.use_database(kgdb_name)
+        kb_label = self._sanitize_label(kb_id)
 
         # 如果node_names为None，则获取所有没有嵌入向量的节点
         if node_names is None:
-            node_names = self.query_nodes_without_embedding(kgdb_name)
+            node_names = self.query_nodes_without_embedding(kgdb_name, kb_label=kb_label)
 
         count = 0
         with self.driver.session() as session:
             for node_name in node_names:
                 try:
                     embedding = await self.aget_embedding(node_name, batch_size=batch_size)
-                    session.execute_write(self.set_embedding, node_name, embedding)
+                    session.execute_write(self.set_embedding, node_name, embedding, kb_label)
                     count += 1
                 except Exception as e:
                     logger.error(f"为节点 '{node_name}' 添加嵌入向量失败: {e}, {traceback.format_exc()}")
@@ -353,7 +378,7 @@ class UploadGraphService:
         """
         tx.run(query)
 
-    def query_nodes_without_embedding(self, kgdb_name="neo4j"):
+    def query_nodes_without_embedding(self, kgdb_name="neo4j", kb_label: str | None = None):
         """查询没有嵌入向量的节点
 
         Returns:
@@ -361,10 +386,12 @@ class UploadGraphService:
         """
         assert self.driver is not None, "Database is not connected"
         self.use_database(kgdb_name)
+        kb_label = self._sanitize_label(kb_label)
+        label_clause = f":`{kb_label}`" if kb_label else ""
 
         def query(tx):
-            result = tx.run("""
-            MATCH (n:Entity)
+            result = tx.run(f"""
+            MATCH (n:Entity{label_clause})
             WHERE n.embedding IS NULL
             RETURN n.name AS name
             """)
@@ -489,11 +516,13 @@ class UploadGraphService:
             outputs = self.embed_model.encode([text])[0]
             return outputs
 
-    def set_embedding(self, tx, entity_name, embedding):
+    def set_embedding(self, tx, entity_name, embedding, kb_label: str | None = None):
         """为单个实体设置嵌入向量"""
+        kb_label = self._sanitize_label(kb_label)
+        label_clause = f":`{kb_label}`" if kb_label else ""
         tx.run(
-            """
-        MATCH (e:Entity {name: $name})
+            f"""
+        MATCH (e:Entity{label_clause} {{name: $name}})
         CALL db.create.setNodeVectorProperty(e, 'embedding', $embedding)
         """,
             name=entity_name,
@@ -501,13 +530,22 @@ class UploadGraphService:
         )
 
     def query_node(
-        self, keyword, threshold=0.9, kgdb_name="neo4j", hops=2, max_entities=8, return_format="graph", **kwargs
+        self,
+        keyword,
+        threshold=0.9,
+        kgdb_name="neo4j",
+        kb_id: str | None = None,
+        hops=2,
+        max_entities=8,
+        return_format="graph",
+        **kwargs,
     ):
         """知识图谱查询节点的入口"""
         assert self.driver is not None, "Database is not connected"
         assert self.is_running(), "图数据库未启动"
 
         self.use_database(kgdb_name)
+        kb_label = self._sanitize_label(kb_id)
 
         # 简单空格分词，OR 聚合
         tokens = [t for t in str(keyword).split(" ") if t]
@@ -518,7 +556,7 @@ class UploadGraphService:
         entity_to_score = {}
         for token in tokens:
             # 使用向量索引进行查询
-            results_sim = self._query_with_vector_sim(token, kgdb_name, threshold)
+            results_sim = self._query_with_vector_sim(token, kgdb_name, threshold, kb_label=kb_label)
             for r in results_sim:
                 name = r[0]  # 与下方保持统一的 [0] 取 name 的方式
                 score = 0.0
@@ -530,7 +568,7 @@ class UploadGraphService:
                 entity_to_score[name] = max(entity_to_score.get(name, 0.0), score)
 
             # 模糊查询（不区分大小写），命中加一个较小分
-            results_fuzzy = self._query_with_fuzzy_match(token, kgdb_name)
+            results_fuzzy = self._query_with_fuzzy_match(token, kgdb_name, kb_label=kb_label)
             for fr in results_fuzzy:
                 # _query_with_fuzzy_match 返回 values()，形如 [name]
                 name = fr[0]
@@ -546,7 +584,9 @@ class UploadGraphService:
         # 对每个合格的实体进行查询
         all_query_results = {"nodes": [], "edges": [], "triples": []}
         for entity in qualified_entities:
-            query_result = self._query_specific_entity(entity_name=entity, kgdb_name=kgdb_name, hops=hops)
+            query_result = self._query_specific_entity(
+                entity_name=entity, kgdb_name=kgdb_name, kb_label=kb_label, hops=hops
+            )
             if return_format == "graph":
                 all_query_results["nodes"].extend(query_result["nodes"])
                 all_query_results["edges"].extend(query_result["edges"])
@@ -586,15 +626,17 @@ class UploadGraphService:
 
         return all_query_results
 
-    def _query_with_fuzzy_match(self, keyword, kgdb_name="neo4j"):
+    def _query_with_fuzzy_match(self, keyword, kgdb_name="neo4j", kb_label: str | None = None):
         """模糊查询"""
         assert self.driver is not None, "Database is not connected"
         self.use_database(kgdb_name)
+        kb_label = self._sanitize_label(kb_label)
+        label_clause = f":`{kb_label}`" if kb_label else ""
 
         def query_fuzzy_match(tx, keyword):
             result = tx.run(
-                """
-            MATCH (n:Upload)
+                f"""
+            MATCH (n:Upload{label_clause})
             WHERE toLower(n.name) CONTAINS toLower($keyword)
             RETURN DISTINCT n.name AS name
             """,
@@ -607,10 +649,11 @@ class UploadGraphService:
         with self.driver.session() as session:
             return session.execute_read(query_fuzzy_match, keyword)
 
-    def _query_with_vector_sim(self, keyword, kgdb_name="neo4j", threshold=0.9):
+    def _query_with_vector_sim(self, keyword, kgdb_name="neo4j", threshold=0.9, kb_label: str | None = None):
         """向量查询"""
         assert self.driver is not None, "Database is not connected"
         self.use_database(kgdb_name)
+        kb_label = self._sanitize_label(kb_label)
 
         def _index_exists(tx, index_name):
             """检查索引是否存在"""
@@ -620,7 +663,7 @@ class UploadGraphService:
                     return True
             return False
 
-        def query_by_vector(tx, text, threshold):
+        def query_by_vector(tx, text, threshold, kb_label):
             # 首先检查索引是否存在
             if not _index_exists(tx, "entityEmbeddings"):
                 raise Exception(
@@ -633,17 +676,21 @@ class UploadGraphService:
             CALL db.index.vector.queryNodes('entityEmbeddings', 10, $embedding)
             YIELD node AS similarEntity, score
             WHERE 'Upload' IN labels(similarEntity)
+              AND ($kb_label IS NULL OR $kb_label IN labels(similarEntity))
             RETURN similarEntity.name AS name, score
             """,
                 embedding=embedding,
+                kb_label=kb_label,
             )
             return [r for r in result if r["score"] > threshold]
 
         with self.driver.session() as session:
-            results = session.execute_read(query_by_vector, keyword, threshold=threshold)
+            results = session.execute_read(query_by_vector, keyword, threshold=threshold, kb_label=kb_label)
             return results
 
-    def _query_specific_entity(self, entity_name, kgdb_name="neo4j", hops=2, limit=100):
+    def _query_specific_entity(
+        self, entity_name, kgdb_name="neo4j", kb_label: str | None = None, hops=2, limit=100
+    ):
         """查询指定实体三元组信息（无向关系）"""
         assert self.driver is not None, "Database is not connected"
         if not entity_name:
@@ -651,6 +698,8 @@ class UploadGraphService:
             return []
 
         self.use_database(kgdb_name)
+        kb_label = self._sanitize_label(kb_label)
+        label_clause = f":`{kb_label}`" if kb_label else ""
 
         def _process_record_props(record):
             """处理记录中的属性：扁平化 properties 并移除 embedding"""
@@ -670,10 +719,10 @@ class UploadGraphService:
 
         def query(tx, entity_name, hops, limit):
             try:
-                query_str = """
+                query_str = f"""
                 WITH [
                     // 1跳出边
-                    [(n:Upload {name: $entity_name})-[r1]->(m1) |
+                    [(n:Upload{label_clause} {{name: $entity_name}})-[r1]->(m1:Upload{label_clause}) |
                      {h: {id: elementId(n), name: n.name, properties: properties(n)},
                       r: {
                         id: elementId(r1),
@@ -684,7 +733,7 @@ class UploadGraphService:
                       },
                       t: {id: elementId(m1), name: m1.name, properties: properties(m1)}}],
                     // 2跳出边
-                    [(n:Upload {name: $entity_name})-[r1]->(m1)-[r2]->(m2) |
+                    [(n:Upload{label_clause} {{name: $entity_name}})-[r1]->(m1:Upload{label_clause})-[r2]->(m2:Upload{label_clause}) |
                      {h: {id: elementId(m1), name: m1.name, properties: properties(m1)},
                       r: {
                         id: elementId(r2),
@@ -695,7 +744,7 @@ class UploadGraphService:
                       },
                       t: {id: elementId(m2), name: m2.name, properties: properties(m2)}}],
                     // 1跳入边
-                    [(m1)-[r1]->(n:Upload {name: $entity_name}) |
+                    [(m1:Upload{label_clause})-[r1]->(n:Upload{label_clause} {{name: $entity_name}}) |
                      {h: {id: elementId(m1), name: m1.name, properties: properties(m1)},
                       r: {
                         id: elementId(r1),
@@ -706,7 +755,7 @@ class UploadGraphService:
                       },
                       t: {id: elementId(n), name: n.name, properties: properties(n)}}],
                     // 2跳入边
-                    [(m2)-[r2]->(m1)-[r1]->(n:Upload {name: $entity_name}) |
+                    [(m2:Upload{label_clause})-[r2]->(m1:Upload{label_clause})-[r1]->(n:Upload{label_clause} {{name: $entity_name}}) |
                      {h: {id: elementId(m2), name: m2.name, properties: properties(m2)},
                       r: {
                         id: elementId(r2),

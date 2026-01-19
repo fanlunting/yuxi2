@@ -105,6 +105,29 @@ async def get_graphs(current_user: User = Depends(get_admin_user)):
                 }
             )
 
+        # 3. 为每个知识库提供一个“上传图谱”(Upload) 入口，支持 JSONL 手动导入并按 kb_id 隔离
+        # 说明：upload:<kb_id> 通过节点 label=kb_id 做隔离，避免污染默认图谱
+        all_dbs = knowledge_base.get_databases().get("databases", [])
+        from src.knowledge.adapters.upload import UploadGraphAdapter
+
+        upload_capabilities = _get_capabilities_from_metadata(UploadGraphAdapter._get_metadata(None))
+        for db in all_dbs:
+            kb_id = db.get("db_id")
+            if not kb_id:
+                continue
+            graphs.append(
+                {
+                    "id": f"upload:{kb_id}",
+                    "name": f"{db.get('name') or kb_id}（上传图谱）",
+                    "type": "upload",
+                    "description": "Upload JSONL triples and isolate graph by knowledge base",
+                    "status": "active",
+                    "created_at": db.get("created_at"),
+                    "metadata": {"kb_id": kb_id, "kb_type": db.get("kb_type")},
+                    "capabilities": upload_capabilities,
+                }
+            )
+
         return {"success": True, "data": graphs}
 
     except Exception as e:
@@ -183,27 +206,13 @@ async def get_graph_stats(
     获取图谱统计信息
     """
     try:
-        # 使用适配器的统计信息 (适用于 kb_ 开头的数据库和 LightRAG 数据库)
-        if db_id.startswith("kb_") or knowledge_base.is_lightrag_database(db_id):
-            adapter = await _get_graph_adapter(db_id)
-            stats_data = await adapter.get_stats()
-            return {"success": True, "data": stats_data}
-        else:
-            # Neo4j stats (直接管理的图谱)
-            info = graph_base.get_graph_info(graph_name=db_id)
-            if not info:
-                raise HTTPException(status_code=404, detail="Graph info not found")
-
-            return {
-                "success": True,
-                "data": {
-                    "total_nodes": info.get("entity_count", 0),
-                    "total_edges": info.get("relationship_count", 0),
-                    # Neo4j info currently returns 'labels' list, not counts per label.
-                    # Improving this would require updating GraphDatabase.get_graph_info
-                    "entity_types": [{"type": label, "count": "N/A"} for label in info.get("labels", [])],
-                },
-            }
+        # 统一使用适配器统计信息：
+        # - LightRAG: db_id=kb_xxx
+        # - 默认上传图谱: db_id=neo4j
+        # - KB 隔离上传图谱: db_id=upload:<kb_id>
+        adapter = await _get_graph_adapter(db_id)
+        stats_data = await adapter.get_stats()
+        return {"success": True, "data": stats_data}
 
     except Exception as e:
         logger.error(f"Failed to get stats: {e}")
@@ -252,7 +261,8 @@ async def index_neo4j_entities(data: dict = Body(default={}), current_user: User
             raise HTTPException(status_code=400, detail="图数据库未启动")
 
         kgdb_name = data.get("kgdb_name", "neo4j")
-        count = await graph_base.add_embedding_to_nodes(kgdb_name=kgdb_name)
+        kb_id = data.get("kb_id")
+        count = await graph_base.add_embedding_to_nodes(kgdb_name=kgdb_name, kb_id=kb_id)
 
         return {
             "success": True,
@@ -269,6 +279,7 @@ async def index_neo4j_entities(data: dict = Body(default={}), current_user: User
 async def add_neo4j_entities(
     file_path: str = Body(...),
     kgdb_name: str | None = Body(None),
+    kb_id: str | None = Body(None),
     embed_model_name: str | None = Body(None),
     batch_size: int | None = Body(None),
     current_user: User = Depends(get_admin_user),
@@ -276,7 +287,7 @@ async def add_neo4j_entities(
     """通过JSONL文件添加图谱实体到Neo4j（只接受 MinIO URL）"""
     try:
         # 服务层会验证 URL 并从 MinIO 下载文件
-        await graph_base.jsonl_file_add_entity(file_path, kgdb_name, embed_model_name, batch_size)
+        await graph_base.jsonl_file_add_entity(file_path, kgdb_name, kb_id, embed_model_name, batch_size)
         return {"success": True, "message": "实体添加成功", "status": "success"}
     except StorageError as e:
         # MinIO 验证或下载错误

@@ -129,13 +129,15 @@ export const neo4jApi = {
     file_path,
     kgdb_name = 'neo4j',
     embed_model_name = null,
-    batch_size = null
+    batch_size = null,
+    kb_id = null
   ) => {
     return await apiPost(
       '/api/graph/neo4j/add-entities',
       {
         file_path: file_path,
         kgdb_name: kgdb_name,
+        kb_id: kb_id,
         embed_model_name: embed_model_name,
         batch_size: batch_size
       },
@@ -149,11 +151,12 @@ export const neo4jApi = {
    * @param {string} kgdb_name - Neo4j数据库名称（默认为'neo4j'）
    * @returns {Promise} - 索引结果
    */
-  indexEntities: async (kgdb_name = 'neo4j') => {
+  indexEntities: async (kgdb_name = 'neo4j', kb_id = null) => {
     return await apiPost(
       '/api/graph/neo4j/index-entities',
       {
-        kgdb_name: kgdb_name
+        kgdb_name: kgdb_name,
+        kb_id: kb_id
       },
       {},
       true
