@@ -204,7 +204,9 @@ class LightRagKB(KnowledgeBase):
             return EmbeddingFunc(
                 embedding_dim=config_dict["dimension"],
                 max_token_size=8192,
-                func=lambda texts: ollama_embed(
+                # lightrag's `ollama_embed` is already an EmbeddingFunc (decorated with default attrs).
+                # Use `.func` to avoid inheriting the decorator's embedding_dim.
+                func=lambda texts: ollama_embed.func(
                     texts=texts,
                     embed_model=config_dict["name"],
                     api_key=config_dict["api_key"],
@@ -222,7 +224,9 @@ class LightRagKB(KnowledgeBase):
         return EmbeddingFunc(
             embedding_dim=config_dict["dimension"],
             max_token_size=8192,
-            func=lambda texts: openai_embed(
+            # lightrag's `openai_embed` is already an EmbeddingFunc (decorated with OpenAI defaults, e.g. 1536 dim).
+            # Use `.func` so our configured dimension is the one validated against.
+            func=lambda texts: openai_embed.func(
                 texts=texts,
                 model=model_name,
                 api_key=config_dict["api_key"],

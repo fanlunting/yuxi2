@@ -129,7 +129,8 @@ export const neo4jApi = {
     file_path,
     kgdb_name = 'neo4j',
     embed_model_name = null,
-    batch_size = null
+    batch_size = null,
+    namespace = null
   ) => {
     return await apiPost(
       '/api/graph/neo4j/add-entities',
@@ -137,7 +138,8 @@ export const neo4jApi = {
         file_path: file_path,
         kgdb_name: kgdb_name,
         embed_model_name: embed_model_name,
-        batch_size: batch_size
+        batch_size: batch_size,
+        namespace: namespace
       },
       {},
       true

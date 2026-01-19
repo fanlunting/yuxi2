@@ -82,6 +82,29 @@ async def get_graphs(current_user: User = Depends(get_admin_user)):
                 }
             )
 
+        # 1.1 额外：返回上传图谱的命名空间（用于“图谱隔离”）
+        # 约定：id 使用 upload:<namespace>，避免与知识库 db_id 冲突
+        try:
+            namespaces = graph_base.get_graph_namespaces() if hasattr(graph_base, "get_graph_namespaces") else []
+        except Exception:
+            namespaces = []
+
+        for ns in namespaces:
+            if not isinstance(ns, str) or not ns.strip():
+                continue
+            ns = ns.strip()
+            graphs.append(
+                {
+                    "id": f"upload:{ns}",
+                    "name": ns,
+                    "type": ns,
+                    "description": f"Upload graph namespace: {ns}",
+                    "status": neo4j_info.get("status", "unknown") if neo4j_info else "unknown",
+                    "created_at": neo4j_info.get("last_updated") if neo4j_info else None,
+                    "capabilities": capabilities if neo4j_info else _get_capabilities_from_metadata(UploadGraphAdapter._get_metadata(None)),
+                }
+            )
+
         # 2. 获取 LightRAG 数据库信息
         lightrag_dbs = knowledge_base.get_lightrag_databases()
         # 直接使用 LightRAG 适配器的默认 metadata
@@ -271,12 +294,13 @@ async def add_neo4j_entities(
     kgdb_name: str | None = Body(None),
     embed_model_name: str | None = Body(None),
     batch_size: int | None = Body(None),
+    namespace: str | None = Body(None),
     current_user: User = Depends(get_admin_user),
 ):
     """通过JSONL文件添加图谱实体到Neo4j（只接受 MinIO URL）"""
     try:
         # 服务层会验证 URL 并从 MinIO 下载文件
-        await graph_base.jsonl_file_add_entity(file_path, kgdb_name, embed_model_name, batch_size)
+        await graph_base.jsonl_file_add_entity(file_path, kgdb_name, embed_model_name, batch_size, namespace=namespace)
         return {"success": True, "message": "实体添加成功", "status": "success"}
     except StorageError as e:
         # MinIO 验证或下载错误

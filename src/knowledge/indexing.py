@@ -31,6 +31,7 @@ SUPPORTED_FILE_EXTENSIONS: tuple[str, ...] = (
     ".html",
     ".htm",
     ".json",
+    ".jsonl",
     ".csv",
     ".xls",
     ".xlsx",
@@ -497,6 +498,23 @@ async def process_file_to_markdown(file_path: str, params: dict | None = None) -
             data = json.loads(content)
             # 将 JSON 数据格式化为 markdown 代码块
             json_str = json.dumps(data, ensure_ascii=False, indent=2)
+            result = f"```json\n{json_str}\n```"
+
+        elif file_ext == ".jsonl":
+            # 处理 JSONL 文件（按行 JSON）
+            import json
+
+            async with aiofiles.open(file_path_obj, encoding="utf-8") as f:
+                content = await f.read()
+
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+            try:
+                data = [json.loads(line) for line in lines]
+                json_str = json.dumps(data, ensure_ascii=False, indent=2)
+            except Exception:
+                # 若不是严格 JSONL，兜底按文本展示
+                json_str = content
+
             result = f"```json\n{json_str}\n```"
 
         elif file_ext == ".zip":

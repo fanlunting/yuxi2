@@ -45,6 +45,10 @@ class GraphAdapterFactory:
         Returns:
             图谱类型: "lightrag" (LightRAG) 或 "upload"
         """
+        # 0. Upload namespace graphs (explicit prefix)
+        if db_id.startswith("upload:"):
+            return "upload"
+
         # 1. 首先检查是否是 LightRAG 数据库 (通过知识库管理器)
         if knowledge_base_manager:
             db_info = knowledge_base_manager.get_database_info(db_id)
@@ -77,7 +81,15 @@ class GraphAdapterFactory:
             # LightRAG 类型，使用 kb_id 作为配置
             return cls.create_adapter("lightrag", config={"kb_id": db_id})
         else:
-            # Upload 类型，使用 kgdb_name 作为配置
+            # Upload 类型
+            if db_id.startswith("upload:"):
+                namespace = db_id.split(":", 1)[1]
+                return cls.create_adapter(
+                    "upload",
+                    graph_db_instance=graph_db_instance,
+                    config={"kgdb_name": "neo4j", "namespace": namespace},
+                )
+            # fallback: use db_id as neo4j database name (legacy)
             return cls.create_adapter("upload", graph_db_instance=graph_db_instance, config={"kgdb_name": db_id})
 
     @classmethod
