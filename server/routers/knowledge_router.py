@@ -1071,13 +1071,8 @@ async def upload_file(
 
     if ext == ".jsonl":
         # `.jsonl` is only supported for graph import flows (Upload graph / Neo4j).
-        # It may optionally pass `db_id` to scope storage:
-        # - db_id is None: behave like the original flow (default bucket)
-        # - db_id == "neo4j": scope to a dedicated bucket
-        # - db_id is an existing knowledge base id: scope to that KB bucket
+        # It may optionally pass `db_id` to scope storage (without modifying global metadata).
         if allow_jsonl is not True:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
-        if db_id is not None and db_id != "neo4j" and knowledge_base.get_database_info(db_id) is None:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
     elif not (is_supported_file_extension(file.filename) or ext == ".zip"):
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
@@ -1103,9 +1098,18 @@ async def upload_file(
     timestamp = int(time.time() * 1000)
     minio_filename = f"{basename}_{timestamp}{ext}"
 
-    # 生成符合MinIO规范的存储桶名称（将下划线替换为连字符）
+    # 生成符合MinIO规范的存储桶名称（用于隔离存储）
     if db_id:
-        bucket_name = f"ref-{db_id.replace('_', '-')}"
+        db_id_str = str(db_id).strip()
+        # Prefer ref-{db_id} for real KB ids and neo4j (existing behavior)
+        if db_id_str == "neo4j" or knowledge_base.get_database_info(db_id_str) is not None:
+            bucket_name = f"ref-{db_id_str.replace('_', '-').lower()}"
+        else:
+            # For graph import scoping with arbitrary db_id (e.g. Chinese names),
+            # use a stable ASCII bucket name derived from hash to satisfy MinIO bucket constraints.
+            from src.utils import hashstr
+
+            bucket_name = f"graph-{hashstr(db_id_str, length=20)}"
     else:
         bucket_name = "default-uploads"
 
