@@ -1070,9 +1070,9 @@ async def upload_file(
     ext = os.path.splitext(file.filename)[1].lower()
 
     if ext == ".jsonl":
-        # `.jsonl` is only supported for graph import flows (Upload graph / Neo4j).
-        # It may optionally pass `db_id` to scope storage (without modifying global metadata).
-        if allow_jsonl is not True:
+        # `.jsonl` is supported as a regular knowledge file type (when db_id is provided),
+        # and also supported for graph import flows (when allow_jsonl=true).
+        if db_id is None and allow_jsonl is not True:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
     elif not (is_supported_file_extension(file.filename) or ext == ".zip"):
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
