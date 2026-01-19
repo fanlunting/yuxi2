@@ -332,6 +332,18 @@ class KnowledgeBaseManager:
         kb_instance = self._get_kb_for_database(db_id)
         await kb_instance.update_file_params(db_id, file_id, params, operator_id)
 
+    async def set_file_status(
+        self,
+        db_id: str,
+        file_id: str,
+        status: str,
+        operator_id: str | None = None,
+        extra: dict | None = None,
+    ) -> dict:
+        """Update file status (metadata only)"""
+        kb_instance = self._get_kb_for_database(db_id)
+        return await kb_instance.set_file_status(db_id, file_id, status, operator_id, extra)
+
     async def aquery(self, query_text: str, db_id: str, **kwargs) -> str:
         """异步查询知识库"""
         kb_instance = self._get_kb_for_database(db_id)

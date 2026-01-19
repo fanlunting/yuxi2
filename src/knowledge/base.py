@@ -176,6 +176,31 @@ class KnowledgeBase(ABC):
 
         return metadata
 
+    async def set_file_status(
+        self,
+        db_id: str,
+        file_id: str,
+        status: str,
+        operator_id: str | None = None,
+        extra: dict | None = None,
+    ) -> dict:
+        """
+        Update file status and persist metadata.
+        """
+        if file_id not in self.files_meta:
+            raise ValueError(f"File {file_id} not found")
+
+        file_meta = self.files_meta[file_id]
+        file_meta["status"] = status
+        file_meta["updated_at"] = utc_isoformat()
+        if operator_id:
+            file_meta["updated_by"] = operator_id
+        if extra:
+            file_meta.update(extra)
+
+        self._save_metadata()
+        return file_meta
+
     async def parse_file(self, db_id: str, file_id: str, operator_id: str | None = None) -> dict:
         """
         Parse file to Markdown and save to MinIO (Status: PARSING -> PARSED/ERROR_PARSING)

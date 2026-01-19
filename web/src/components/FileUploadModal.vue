@@ -14,7 +14,7 @@
             :loading="chunkLoading"
             :disabled="fileList.length === 0"
           >
-            {{ primaryActionText }}
+            添加到知识库
           </a-button>
         </div>
       </div>
@@ -33,7 +33,7 @@
       </div>
 
       <!-- 2. 配置面板 -->
-      <div class="settings-panel" v-if="uploadMode !== 'graph'">
+      <div class="settings-panel">
         <!-- 第一行：存储位置 + OCR 引擎 -->
         <div class="setting-row two-cols">
           <div class="col-item">
@@ -111,7 +111,7 @@
       </div>
 
       <!-- PDF/图片OCR提醒 (Alert样式优化) -->
-      <div v-if="uploadMode !== 'graph' && hasPdfOrImageFiles && !isOcrEnabled" class="inline-alert warning">
+      <div v-if="hasPdfOrImageFiles && !isOcrEnabled" class="inline-alert warning">
         <Info :size="16" />
         <span>检测到PDF或图片文件，建议启用 OCR 以提取文本内容</span>
       </div>
@@ -122,7 +122,7 @@
           class="custom-dragger"
           v-model:fileList="fileList"
           name="file"
-          :multiple="uploadMode !== 'graph'"
+          :multiple="true"
           :directory="isFolderUpload"
           :disabled="chunkLoading"
           :accept="acceptedFileTypes"
@@ -184,7 +184,6 @@ import { useUserStore } from '@/stores/user'
 import { useDatabaseStore } from '@/stores/database'
 import { ocrApi } from '@/apis/system_api'
 import { fileApi, documentApi } from '@/apis/knowledge_api'
-import { neo4jApi } from '@/apis/graph_api'
 import { CheckCircleFilled, ReloadOutlined } from '@ant-design/icons-vue'
 import { FileUp, FolderUp, RotateCw, CircleHelp, Info, Download, Trash2 } from 'lucide-vue-next'
 import { h } from 'vue'
@@ -260,10 +259,6 @@ const normalizeExtensions = (extensions) => {
 
 const supportedFileTypes = ref(normalizeExtensions(DEFAULT_SUPPORTED_TYPES))
 
-// 上传模式
-const uploadMode = ref('file')
-const previousOcrSelection = ref('disable')
-
 const applySupportedFileTypes = (extensions) => {
   const normalized = normalizeExtensions(extensions)
   if (normalized.length > 0) {
@@ -274,26 +269,19 @@ const applySupportedFileTypes = (extensions) => {
 }
 
 const acceptedFileTypes = computed(() => {
-  if (uploadMode.value === 'graph') {
-    return '.jsonl'
-  }
   if (!supportedFileTypes.value.length) {
     return ''
   }
-  // JSONL 作为图谱导入格式，避免在“文档上传”模式下误入库
-  const exts = new Set(supportedFileTypes.value.filter((ext) => ext !== '.jsonl'))
+  const exts = new Set(supportedFileTypes.value)
   exts.add('.zip')
   return Array.from(exts).join(',')
 })
 
 const uploadHint = computed(() => {
-  if (uploadMode.value === 'graph') {
-    return '.jsonl'
-  }
   if (!supportedFileTypes.value.length) {
     return '加载中...'
   }
-  const exts = new Set(supportedFileTypes.value.filter((ext) => ext !== '.jsonl'))
+  const exts = new Set(supportedFileTypes.value)
   exts.add('.zip')
   return Array.from(exts).join(', ')
 })
@@ -337,6 +325,10 @@ const databaseId = computed(() => store.databaseId)
 const kbType = computed(() => store.database.kb_type)
 const chunkLoading = computed(() => store.state.chunkLoading)
 
+// 上传模式
+const uploadMode = ref('file')
+const previousOcrSelection = ref('disable')
+
 const uploadModeOptions = computed(() => [
   {
     value: 'file',
@@ -351,34 +343,14 @@ const uploadModeOptions = computed(() => [
       h(FolderUp, { size: 16, class: 'option-icon' }),
       h('span', { class: 'option-text' }, '上传文件夹')
     ])
-  },
-  {
-    value: 'graph',
-    label: h('div', { class: 'segmented-option' }, [
-      h(RotateCw, { size: 16, class: 'option-icon' }),
-      h('span', { class: 'option-text' }, '上传图谱')
-    ])
   }
 ])
 
 watch(uploadMode, (val) => {
   isFolderUpload.value = val === 'folder'
-  if (val === 'graph') {
-    // 图谱导入不需要 OCR 配置，且避免误用
-    previousOcrSelection.value = chunkParams.value.enable_ocr
-    chunkParams.value.enable_ocr = 'disable'
-    autoIndex.value = false
-  } else if (previousOcrSelection.value && chunkParams.value.enable_ocr === 'disable') {
-    // 从图谱模式切回时，恢复之前的 OCR 选择
-    chunkParams.value.enable_ocr = previousOcrSelection.value
-  }
   // 切换模式时清空已选文件，避免混淆
   fileList.value = []
   sameNameFiles.value = []
-})
-
-const primaryActionText = computed(() => {
-  return uploadMode.value === 'graph' ? '导入到图谱' : '添加到知识库'
 })
 
 // 文件列表
@@ -609,10 +581,6 @@ const handleCancel = () => {
 }
 
 const beforeUpload = (file) => {
-  if (uploadMode.value !== 'graph' && typeof file?.name === 'string' && file.name.toLowerCase().endsWith('.jsonl')) {
-    message.error('JSONL 仅用于图谱导入，请切换到“上传图谱”模式')
-    return Upload.LIST_IGNORE
-  }
   if (!isSupportedExtension(file?.name)) {
     message.error(`不支持的文件类型：${file?.name || '未知文件'}`)
     return Upload.LIST_IGNORE
@@ -724,11 +692,7 @@ const customRequest = async (options) => {
   }
 
   const xhr = new XMLHttpRequest()
-  const uploadUrl =
-    uploadMode.value === 'graph'
-      ? `/api/knowledge/files/upload?db_id=${encodeURIComponent(dbId)}&allow_jsonl=true`
-      : `/api/knowledge/files/upload?db_id=${encodeURIComponent(dbId)}`
-  xhr.open('POST', uploadUrl)
+  xhr.open('POST', `/api/knowledge/files/upload?db_id=${dbId}`)
 
   const headers = getAuthHeaders()
   for (const [key, value] of Object.entries(headers)) {
@@ -816,49 +780,7 @@ const openDocLink = () => {
   )
 }
 
-const importGraphFromJsonl = async () => {
-  if (!databaseId.value) {
-    message.error('请先选择知识库')
-    return
-  }
-
-  const uploaded = fileList.value.filter((file) => file.status === 'done' && file.response?.file_path)
-  if (uploaded.length === 0) {
-    message.error('请先上传 JSONL 文件')
-    return
-  }
-  if (uploaded.length > 1) {
-    message.error('图谱导入目前仅支持单个 JSONL 文件')
-    return
-  }
-
-  const filePath = uploaded[0]?.response?.file_path
-  if (!filePath || !String(filePath).toLowerCase().endsWith('.jsonl')) {
-    message.error('文件格式错误，请上传 .jsonl 文件')
-    return
-  }
-
-  try {
-    store.state.chunkLoading = true
-    await neo4jApi.addEntities(filePath, 'neo4j', null, null, databaseId.value)
-    message.success('图谱导入成功')
-    emit('success')
-    handleCancel()
-    fileList.value = []
-    sameNameFiles.value = []
-  } catch (error) {
-    console.error('图谱导入失败:', error)
-    message.error('图谱导入失败: ' + (error.message || '未知错误'))
-  } finally {
-    store.state.chunkLoading = false
-  }
-}
-
 const chunkData = async () => {
-  if (uploadMode.value === 'graph') {
-    await importGraphFromJsonl()
-    return
-  }
   if (!databaseId.value) {
     message.error('请先选择知识库')
     return

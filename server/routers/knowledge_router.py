@@ -13,6 +13,7 @@ from server.services.tasker import TaskContext, tasker
 from server.utils.auth_middleware import get_admin_user
 from src import config, knowledge_base
 from src.knowledge.indexing import SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension, process_file_to_markdown
+from src.knowledge.base import FileStatus
 from src.knowledge.utils import calculate_content_hash
 from src.models.embed import test_all_embedding_models_status, test_embedding_model_status
 from src.storage.db.models import User
@@ -303,10 +304,24 @@ async def add_documents(
                 await context.set_progress(progress, f"[2/2] 解析文件 {idx}/{len(added_files)}")
 
                 try:
-                    # 2. Parse file (PARSING -> PARSED)
-                    file_meta = await knowledge_base.parse_file(db_id, file_id, operator_id=current_user.id)
-                    processed_items.append(file_meta)
-                    parse_success_count += 1
+                    item_lower = str(item).lower()
+                    if item_lower.endswith(".jsonl"):
+                        await context.set_message("导入图谱（JSONL）")
+                        await graph_base.jsonl_file_add_entity(item, kgdb_name="neo4j", kb_id=db_id)
+                        file_meta = await knowledge_base.set_file_status(
+                            db_id,
+                            file_id,
+                            FileStatus.INDEXED,
+                            operator_id=current_user.id,
+                            extra={"graph_imported": True, "graph_kb_id": db_id},
+                        )
+                        processed_items.append(file_meta)
+                        parse_success_count += 1
+                    else:
+                        # 2. Parse file (PARSING -> PARSED)
+                        file_meta = await knowledge_base.parse_file(db_id, file_id, operator_id=current_user.id)
+                        processed_items.append(file_meta)
+                        parse_success_count += 1
                 except Exception as parse_error:
                     logger.error(f"解析文件失败 {item} (file_id={file_id}): {parse_error}")
                     error_type = "timeout" if isinstance(parse_error, TimeoutError) else "parse_failed"
@@ -1070,9 +1085,10 @@ async def upload_file(
     ext = os.path.splitext(file.filename)[1].lower()
 
     if ext == ".jsonl":
-        # JSONL 默认不作为普通知识库文档处理，仅在显式允许时开放上传
-        # 允许携带 db_id（用于图谱上传/隔离存储桶）
-        if allow_jsonl is not True:
+        # JSONL 作为图谱导入数据：
+        # - 在知识库场景（db_id 不为空）默认允许上传，由后续 ingest 任务做特殊处理
+        # - 在其它场景需要显式 allow_jsonl=true
+        if not db_id and allow_jsonl is not True:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
     elif not (is_supported_file_extension(file.filename) or ext == ".zip"):
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
