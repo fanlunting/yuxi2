@@ -3,6 +3,7 @@ import os
 import traceback
 import warnings
 from urllib.parse import urlparse
+from typing import Any
 
 from src import config
 from src.knowledge.adapters.base import Neo4jConnectionManager
@@ -23,16 +24,15 @@ class UploadGraphService:
     def __init__(self, db_manager: Neo4jConnectionManager = None):
         self.connection = db_manager or Neo4jConnectionManager()
         self.files = []
-        self.kgdb_name = "neo4j"
-        self.embed_model_name = None  # self.load_graph_info() 时加载
-        self.embed_model = None  # self.load_graph_info() 时加载
-        self.work_dir = os.path.join(config.save_dir, "knowledge_graph", self.kgdb_name)
-        os.makedirs(self.work_dir, exist_ok=True)
-        self.is_initialized_from_file = False
-
-        # 尝试加载已保存的图数据库信息
-        if not self.load_graph_info():
-            logger.debug("创建新的图数据库配置")
+        # Neo4j Community：不支持多 database（CREATE DATABASE）。
+        # 本项目“每个知识库隔离”使用 label/属性（kb_label/kb_id）实现，统一写入默认库。
+        self._base_dir = os.path.join(config.save_dir, "knowledge_graph")
+        os.makedirs(self._base_dir, exist_ok=True)
+        self._default_db_name = os.environ.get("NEO4J_DATABASE", "neo4j")
+        # 默认库维度的图谱配置（embed_model 等）
+        self._embed_model_name_by_db: dict[str, str | None] = {self._default_db_name: None}
+        self._is_initialized_from_file_by_db: dict[str, bool] = {self._default_db_name: False}
+        self._embed_model_cache: dict[str, Any] = {}
 
     @property
     def driver(self):
@@ -49,7 +49,7 @@ class UploadGraphService:
         # Neo4jConnectionManager 在初始化时已经自动连接
         if not self.connection.is_running():
             self.connection._connect()
-            logger.info(f"Connected to Neo4j: {self.get_graph_info(self.kgdb_name)}")
+            logger.info("Connected to Neo4j")
 
     def close(self):
         """关闭数据库连接"""
@@ -59,35 +59,44 @@ class UploadGraphService:
         """检查图数据库是否正在运行"""
         return self.connection.is_running()
 
-    def create_graph_database(self, kgdb_name):
-        """创建新的数据库，如果已存在则返回已有数据库的名称"""
-        assert self.driver is not None, "Database is not connected"
-        with self.driver.session() as session:
-            existing_databases = session.run("SHOW DATABASES")
-            existing_db_names = [db["name"] for db in existing_databases]
+    def _resolve_kgdb_name(self, requested: str | None) -> str:
+        """Neo4j Community：始终使用默认库，不创建新库。"""
+        _ = requested  # keep signature stable
+        return self._default_db_name
 
-            if existing_db_names:
-                print(f"已存在数据库: {existing_db_names[0]}")
-                return existing_db_names[0]  # 返回所有已有数据库名称
+    def _get_graph_work_dir(self, kgdb_name: str) -> str:
+        work_dir = os.path.join(self._base_dir, kgdb_name)
+        os.makedirs(work_dir, exist_ok=True)
+        return work_dir
 
-            session.run(f"CREATE DATABASE {kgdb_name}")  # type: ignore
-            print(f"数据库 '{kgdb_name}' 创建成功.")
-            return kgdb_name  # 返回创建的数据库名称
+    def _ensure_graph_state_loaded(self, kgdb_name: str) -> None:
+        if kgdb_name in self._is_initialized_from_file_by_db:
+            return
+        self._is_initialized_from_file_by_db[kgdb_name] = False
+        self._embed_model_name_by_db[kgdb_name] = None
+        self.load_graph_info(graph_name=kgdb_name)
 
-    def use_database(self, kgdb_name="neo4j"):
-        """切换到指定数据库"""
-        assert kgdb_name == self.kgdb_name, (
-            f"传入的数据库名称 '{kgdb_name}' 与当前实例的数据库名称 '{self.kgdb_name}' 不一致"
-        )
+    def use_database(self, kgdb_name: str = "neo4j"):
+        """确保连接可用（社区版不创建新库）"""
         if self.status == "closed":
             self.start()
+        resolved = self._resolve_kgdb_name(kgdb_name)
+        self._ensure_graph_state_loaded(resolved)
+        return resolved
 
-    async def jsonl_file_add_entity(self, file_path, kgdb_name="neo4j", embed_model_name=None, batch_size=None):
+    async def jsonl_file_add_entity(
+        self,
+        file_path,
+        kgdb_name: str = "neo4j",
+        embed_model_name: str | None = None,
+        batch_size: int | None = None,
+        kb_id: str | None = None,
+        kb_label: str | None = None,
+    ):
         """从JSONL文件添加实体三元组到Neo4j"""
         assert self.driver is not None, "Database is not connected"
         self.connection.status = "processing"
-        kgdb_name = kgdb_name or "neo4j"
-        self.use_database(kgdb_name)  # 切换到指定数据库
+        kgdb_name = self.use_database(kgdb_name or self._default_db_name)
         logger.info(f"Start adding entity to {kgdb_name} with {file_path}")
 
         # 检测 file_path 是否是 URL
@@ -110,7 +119,14 @@ class UploadGraphService:
                                     yield json.loads(line.strip())
 
                     triples = list(read_triples(actual_file_path))
-                    await self.txt_add_vector_entity(triples, kgdb_name, embed_model_name, batch_size)
+                    await self.txt_add_vector_entity(
+                        triples,
+                        kgdb_name=kgdb_name,
+                        embed_model_name=embed_model_name,
+                        batch_size=batch_size,
+                        kb_id=kb_id,
+                        kb_label=kb_label,
+                    )
                     # 退出 with 块后，临时文件自动清理
 
             else:
@@ -124,13 +140,26 @@ class UploadGraphService:
             self.connection.status = "open"
 
         # 更新并保存图数据库信息
-        self.save_graph_info()
+        self.save_graph_info(graph_name=kgdb_name)
         return kgdb_name
 
-    async def txt_add_vector_entity(self, triples, kgdb_name="neo4j", embed_model_name=None, batch_size=None):
+    def _get_embed_model(self, embed_model_name: str):
+        if embed_model_name not in self._embed_model_cache:
+            self._embed_model_cache[embed_model_name] = select_embedding_model(embed_model_name)
+        return self._embed_model_cache[embed_model_name]
+
+    async def txt_add_vector_entity(
+        self,
+        triples,
+        kgdb_name: str = "neo4j",
+        embed_model_name: str | None = None,
+        batch_size: int | None = None,
+        kb_id: str | None = None,
+        kb_label: str | None = None,
+    ):
         """添加实体三元组"""
         assert self.driver is not None, "Database is not connected"
-        self.use_database(kgdb_name)
+        kgdb_name = self.use_database(kgdb_name)
 
         def _index_exists(tx, index_name):
             """检查索引是否存在"""
@@ -156,8 +185,10 @@ class UploadGraphService:
                 return rel_type, props
             return str(rel_data), {}
 
-        def _create_graph(tx, data):
+        def _create_graph(tx, data, _kb_id: str | None, _kb_label: str | None):
             """添加一个三元组"""
+            # 动态 label 只能拼接到 Cypher 中，不能用参数
+            label_clause = f":`{_kb_label}`" if _kb_label else ""
             for entry in data:
                 h_name, h_props = _parse_node(entry.get("h"))
                 t_name, t_props = _parse_node(entry.get("t"))
@@ -166,13 +197,19 @@ class UploadGraphService:
                 if not h_name or not t_name or not r_type:
                     continue
 
+                # 将 kb_id 同步写入节点/关系属性，方便审计与过滤
+                if _kb_id:
+                    h_props = {**(h_props or {}), "kb_id": _kb_id}
+                    t_props = {**(t_props or {}), "kb_id": _kb_id}
+                    r_props = {**(r_props or {}), "kb_id": _kb_id}
+
                 tx.run(
-                    """
-                MERGE (h:Entity:Upload {name: $h_name})
+                    f"""
+                MERGE (h:Entity:Upload{label_clause} {{name: $h_name}})
                 SET h += $h_props
-                MERGE (t:Entity:Upload {name: $t_name})
+                MERGE (t:Entity:Upload{label_clause} {{name: $t_name}})
                 SET t += $t_props
-                MERGE (h)-[r:RELATION {type: $r_type}]->(t)
+                MERGE (h)-[r:RELATION {{type: $r_type}}]->(t)
                 SET r += $r_props
                 """,
                     h_name=h_name,
@@ -232,27 +269,33 @@ class UploadGraphService:
                     embedding=embedding,
                 )
 
-        # 检查是否允许更新模型
-        if embed_model_name and not self.is_initialized_from_file:
-            if embed_model_name != self.embed_model_name:
-                logger.info(f"Changing embedding model from {self.embed_model_name} to {embed_model_name}")
-                self.embed_model_name = embed_model_name
-                self.embed_model = select_embedding_model(self.embed_model_name)
+        self._ensure_graph_state_loaded(kgdb_name)
+        is_locked = self._is_initialized_from_file_by_db.get(kgdb_name, False)
+        cur_name = self._embed_model_name_by_db.get(kgdb_name)
 
-        # 判断模型名称是否匹配
-        if not self.embed_model_name:
-            self.embed_model_name = config.embed_model
+        # 检查是否允许更新模型（每个图谱库单独锁定）
+        if embed_model_name and not is_locked and embed_model_name != cur_name:
+            logger.info(f"Changing embedding model for {kgdb_name} from {cur_name} to {embed_model_name}")
+            self._embed_model_name_by_db[kgdb_name] = embed_model_name
+            cur_name = embed_model_name
 
-        cur_embed_info = config.embed_model_names.get(self.embed_model_name)
-        logger.warning(f"embed_model_name={self.embed_model_name}, {cur_embed_info=}")
+        # 默认模型
+        if not cur_name:
+            cur_name = config.embed_model
+            self._embed_model_name_by_db[kgdb_name] = cur_name
+
+        cur_embed_info = config.embed_model_names.get(cur_name)
+        logger.warning(f"{kgdb_name=}, embed_model_name={cur_name}, {cur_embed_info=}")
 
         # 允许 self.embed_model_name 与 config.embed_model 不同（用户自定义选择的情况）
         # 但必须在支持的模型列表中
-        assert self.embed_model_name in config.embed_model_names, f"Unsupported embed model: {self.embed_model_name}"
+        assert cur_name in config.embed_model_names, f"Unsupported embed model: {cur_name}"
 
-        with self.driver.session() as session:
+        embed_model = self._get_embed_model(cur_name)
+
+        with self.driver.session(database=kgdb_name) as session:
             logger.info(f"Adding entity to {kgdb_name}")
-            session.execute_write(_create_graph, triples)
+            session.execute_write(_create_graph, triples, kb_id, kb_label)
             logger.info(f"Creating vector index for {kgdb_name} with {config.embed_model}")
             session.execute_write(_create_vector_index, getattr(cur_embed_info, "dimension", 1024))
 
@@ -288,7 +331,7 @@ class UploadGraphService:
                 )
 
                 # 批量获取嵌入向量
-                batch_embeddings = await self.aget_embedding(batch_entities, batch_size=batch_size)
+                batch_embeddings = await embed_model.abatch_encode(batch_entities, batch_size=batch_size or 40)
 
                 # 将实体名称和嵌入向量配对
                 entity_embedding_pairs = list(zip(batch_entities, batch_embeddings))
@@ -297,7 +340,7 @@ class UploadGraphService:
                 session.execute_write(_batch_set_embeddings, entity_embedding_pairs)
 
             # 数据添加完成后保存图信息
-            self.save_graph_info()
+            self.save_graph_info(graph_name=kgdb_name)
 
     async def add_embedding_to_nodes(self, node_names=None, kgdb_name="neo4j", batch_size=None):
         """为节点添加嵌入向量
@@ -311,17 +354,20 @@ class UploadGraphService:
             int: 成功添加嵌入向量的节点数量
         """
         assert self.driver is not None, "Database is not connected"
-        self.use_database(kgdb_name)
+        kgdb_name = self.use_database(kgdb_name)
 
         # 如果node_names为None，则获取所有没有嵌入向量的节点
         if node_names is None:
             node_names = self.query_nodes_without_embedding(kgdb_name)
 
         count = 0
-        with self.driver.session() as session:
+        with self.driver.session(database=kgdb_name) as session:
             for node_name in node_names:
                 try:
-                    embedding = await self.aget_embedding(node_name, batch_size=batch_size)
+                    self._ensure_graph_state_loaded(kgdb_name)
+                    model_name = self._embed_model_name_by_db.get(kgdb_name) or config.embed_model
+                    embed_model = self._get_embed_model(model_name)
+                    embedding = await embed_model.aencode(node_name)
                     session.execute_write(self.set_embedding, node_name, embedding)
                     count += 1
                 except Exception as e:
@@ -332,8 +378,8 @@ class UploadGraphService:
     def delete_entity(self, entity_name=None, kgdb_name="neo4j"):
         """删除数据库中的指定实体三元组, 参数entity_name为空则删除全部实体"""
         assert self.driver is not None, "Database is not connected"
-        self.use_database(kgdb_name)
-        with self.driver.session() as session:
+        kgdb_name = self.use_database(kgdb_name)
+        with self.driver.session(database=kgdb_name) as session:
             if entity_name:
                 session.execute_write(self._delete_specific_entity, entity_name)
             else:
@@ -360,7 +406,7 @@ class UploadGraphService:
             list: 没有嵌入向量的节点列表
         """
         assert self.driver is not None, "Database is not connected"
-        self.use_database(kgdb_name)
+        kgdb_name = self.use_database(kgdb_name)
 
         def query(tx):
             result = tx.run("""
@@ -370,12 +416,12 @@ class UploadGraphService:
             """)
             return [record["name"] for record in result]
 
-        with self.driver.session() as session:
+        with self.driver.session(database=kgdb_name) as session:
             return session.execute_read(query)
 
     def get_graph_info(self, graph_name="neo4j"):
         assert self.driver is not None, "Database is not connected"
-        self.use_database(graph_name)
+        graph_name = self.use_database(graph_name)
 
         def query(tx):
             # 只统计包含Entity标签的节点
@@ -396,19 +442,22 @@ class UploadGraphService:
                 "triples_count": triples_count,
                 "labels": labels,
                 "status": self.status,
-                "embed_model_name": self.embed_model_name,
-                "embed_model_configurable": not self.is_initialized_from_file,
+                "embed_model_name": self._embed_model_name_by_db.get(graph_name),
+                "embed_model_configurable": not self._is_initialized_from_file_by_db.get(graph_name, False),
                 "unindexed_node_count": len(self.query_nodes_without_embedding(graph_name)),
             }
 
         try:
             if self.is_running():
                 # 获取数据库信息
-                with self.driver.session() as session:
+                self._ensure_graph_state_loaded(graph_name)
+                with self.driver.session(database=graph_name) as session:
                     graph_info = session.execute_read(query)
 
                     # 添加时间戳
                     graph_info["last_updated"] = utc_isoformat()
+                    graph_info["embed_model_name"] = self._embed_model_name_by_db.get(graph_name)
+                    graph_info["embed_model_configurable"] = not self._is_initialized_from_file_by_db.get(graph_name, False)
                     return graph_info
             else:
                 logger.warning(f"图数据库未连接或未运行:{self.status=}")
@@ -429,25 +478,27 @@ class UploadGraphService:
                 logger.error("图数据库信息为空，无法保存")
                 return False
 
-            info_file_path = os.path.join(self.work_dir, "graph_info.json")
+            work_dir = self._get_graph_work_dir(graph_name)
+            info_file_path = os.path.join(work_dir, "graph_info.json")
             with open(info_file_path, "w", encoding="utf-8") as f:
                 json.dump(graph_info, f, ensure_ascii=False, indent=2)
 
             # logger.info(f"图数据库信息已保存到：{info_file_path}")
-            # 保存成功后，标记为从文件初始化（锁定配置）
-            self.is_initialized_from_file = True
+            # 保存成功后，标记为从文件初始化（锁定配置，按库维度）
+            self._is_initialized_from_file_by_db[graph_name] = True
             return True
         except Exception as e:
             logger.error(f"保存图数据库信息失败：{e}")
             return False
 
-    def load_graph_info(self):
+    def load_graph_info(self, graph_name: str = "neo4j"):
         """
         从工作目录中的JSON文件加载图数据库的基本信息
         返回True表示加载成功，False表示加载失败
         """
         try:
-            info_file_path = os.path.join(self.work_dir, "graph_info.json")
+            work_dir = self._get_graph_work_dir(graph_name)
+            info_file_path = os.path.join(work_dir, "graph_info.json")
             if not os.path.exists(info_file_path):
                 logger.debug(f"图数据库信息文件不存在：{info_file_path}")
                 return False
@@ -457,37 +508,17 @@ class UploadGraphService:
 
             # 更新对象属性
             if graph_info.get("embed_model_name"):
-                self.embed_model_name = graph_info["embed_model_name"]
-
-            # 重新选择embedding model
-            if self.embed_model_name:
-                self.embed_model = select_embedding_model(self.embed_model_name)
+                self._embed_model_name_by_db[graph_name] = graph_info["embed_model_name"]
 
             # 如果需要，可以加载更多信息
             # 注意：这里不更新self.kgdb_name，因为它是在初始化时设置的
 
-            self.is_initialized_from_file = True
+            self._is_initialized_from_file_by_db[graph_name] = True
             logger.info(f"已加载图数据库信息，最后更新时间：{graph_info.get('last_updated')}")
             return True
         except Exception as e:
             logger.error(f"加载图数据库信息失败：{e}")
             return False
-
-    async def aget_embedding(self, text, batch_size=40):
-        if isinstance(text, list):
-            outputs = await self.embed_model.abatch_encode(text, batch_size=batch_size)
-            return outputs
-        else:
-            outputs = await self.embed_model.aencode(text)
-            return outputs
-
-    def get_embedding(self, text, batch_size=40):
-        if isinstance(text, list):
-            outputs = self.embed_model.batch_encode(text, batch_size=batch_size)
-            return outputs
-        else:
-            outputs = self.embed_model.encode([text])[0]
-            return outputs
 
     def set_embedding(self, tx, entity_name, embedding):
         """为单个实体设置嵌入向量"""
@@ -501,7 +532,15 @@ class UploadGraphService:
         )
 
     def query_node(
-        self, keyword, threshold=0.9, kgdb_name="neo4j", hops=2, max_entities=8, return_format="graph", **kwargs
+        self,
+        keyword,
+        threshold=0.9,
+        kgdb_name="neo4j",
+        hops=2,
+        max_entities=8,
+        return_format="graph",
+        kb_label: str | None = None,
+        **kwargs,
     ):
         """知识图谱查询节点的入口"""
         assert self.driver is not None, "Database is not connected"
@@ -518,7 +557,7 @@ class UploadGraphService:
         entity_to_score = {}
         for token in tokens:
             # 使用向量索引进行查询
-            results_sim = self._query_with_vector_sim(token, kgdb_name, threshold)
+            results_sim = self._query_with_vector_sim(token, kgdb_name, threshold, kb_label=kb_label)
             for r in results_sim:
                 name = r[0]  # 与下方保持统一的 [0] 取 name 的方式
                 score = 0.0
@@ -530,7 +569,7 @@ class UploadGraphService:
                 entity_to_score[name] = max(entity_to_score.get(name, 0.0), score)
 
             # 模糊查询（不区分大小写），命中加一个较小分
-            results_fuzzy = self._query_with_fuzzy_match(token, kgdb_name)
+            results_fuzzy = self._query_with_fuzzy_match(token, kgdb_name, kb_label=kb_label)
             for fr in results_fuzzy:
                 # _query_with_fuzzy_match 返回 values()，形如 [name]
                 name = fr[0]
@@ -546,7 +585,9 @@ class UploadGraphService:
         # 对每个合格的实体进行查询
         all_query_results = {"nodes": [], "edges": [], "triples": []}
         for entity in qualified_entities:
-            query_result = self._query_specific_entity(entity_name=entity, kgdb_name=kgdb_name, hops=hops)
+            query_result = self._query_specific_entity(
+                entity_name=entity, kgdb_name=kgdb_name, hops=hops, kb_label=kb_label
+            )
             if return_format == "graph":
                 all_query_results["nodes"].extend(query_result["nodes"])
                 all_query_results["edges"].extend(query_result["edges"])
@@ -586,7 +627,7 @@ class UploadGraphService:
 
         return all_query_results
 
-    def _query_with_fuzzy_match(self, keyword, kgdb_name="neo4j"):
+    def _query_with_fuzzy_match(self, keyword, kgdb_name="neo4j", kb_label: str | None = None):
         """模糊查询"""
         assert self.driver is not None, "Database is not connected"
         self.use_database(kgdb_name)
@@ -596,18 +637,20 @@ class UploadGraphService:
                 """
             MATCH (n:Upload)
             WHERE toLower(n.name) CONTAINS toLower($keyword)
+              AND ($kb_label IS NULL OR $kb_label IN labels(n))
             RETURN DISTINCT n.name AS name
             """,
                 keyword=keyword,
+                kb_label=kb_label,
             )
             values = result.values()
             logger.debug(f"Fuzzy Query Results: {values}")
             return values
 
-        with self.driver.session() as session:
+        with self.driver.session(database=kgdb_name) as session:
             return session.execute_read(query_fuzzy_match, keyword)
 
-    def _query_with_vector_sim(self, keyword, kgdb_name="neo4j", threshold=0.9):
+    def _query_with_vector_sim(self, keyword, kgdb_name="neo4j", threshold=0.9, kb_label: str | None = None):
         """向量查询"""
         assert self.driver is not None, "Database is not connected"
         self.use_database(kgdb_name)
@@ -627,23 +670,28 @@ class UploadGraphService:
                     "向量索引不存在，请先创建索引，或当前图谱中未上传任何三元组（知识库中自动构建的，不会在此处展示和检索）。"
                 )
 
-            embedding = self.get_embedding(text)
+            self._ensure_graph_state_loaded(kgdb_name)
+            model_name = self._embed_model_name_by_db.get(kgdb_name) or config.embed_model
+            embed_model = self._get_embed_model(model_name)
+            embedding = embed_model.encode([text])[0]
             result = tx.run(
                 """
             CALL db.index.vector.queryNodes('entityEmbeddings', 10, $embedding)
             YIELD node AS similarEntity, score
             WHERE 'Upload' IN labels(similarEntity)
+              AND ($kb_label IS NULL OR $kb_label IN labels(similarEntity))
             RETURN similarEntity.name AS name, score
             """,
                 embedding=embedding,
+                kb_label=kb_label,
             )
             return [r for r in result if r["score"] > threshold]
 
-        with self.driver.session() as session:
+        with self.driver.session(database=kgdb_name) as session:
             results = session.execute_read(query_by_vector, keyword, threshold=threshold)
             return results
 
-    def _query_specific_entity(self, entity_name, kgdb_name="neo4j", hops=2, limit=100):
+    def _query_specific_entity(self, entity_name, kgdb_name="neo4j", hops=2, limit=100, kb_label: str | None = None):
         """查询指定实体三元组信息（无向关系）"""
         assert self.driver is not None, "Database is not connected"
         if not entity_name:
@@ -668,12 +716,13 @@ class UploadGraphService:
             # 合并属性（优先保留原字典中的 id, name, type 等核心字段）
             return {**props, **data}
 
-        def query(tx, entity_name, hops, limit):
+        def query(tx, entity_name, hops, limit, _kb_label: str | None):
             try:
                 query_str = """
                 WITH [
                     // 1跳出边
-                    [(n:Upload {name: $entity_name})-[r1]->(m1) |
+                    [(n:Upload {name: $entity_name})-[r1]->(m1)
+                     WHERE ($kb_label IS NULL OR $kb_label IN labels(n)) |
                      {h: {id: elementId(n), name: n.name, properties: properties(n)},
                       r: {
                         id: elementId(r1),
@@ -684,7 +733,8 @@ class UploadGraphService:
                       },
                       t: {id: elementId(m1), name: m1.name, properties: properties(m1)}}],
                     // 2跳出边
-                    [(n:Upload {name: $entity_name})-[r1]->(m1)-[r2]->(m2) |
+                    [(n:Upload {name: $entity_name})-[r1]->(m1)-[r2]->(m2)
+                     WHERE ($kb_label IS NULL OR $kb_label IN labels(m1)) |
                      {h: {id: elementId(m1), name: m1.name, properties: properties(m1)},
                       r: {
                         id: elementId(r2),
@@ -695,7 +745,8 @@ class UploadGraphService:
                       },
                       t: {id: elementId(m2), name: m2.name, properties: properties(m2)}}],
                     // 1跳入边
-                    [(m1)-[r1]->(n:Upload {name: $entity_name}) |
+                    [(m1)-[r1]->(n:Upload {name: $entity_name})
+                     WHERE ($kb_label IS NULL OR $kb_label IN labels(n)) |
                      {h: {id: elementId(m1), name: m1.name, properties: properties(m1)},
                       r: {
                         id: elementId(r1),
@@ -706,7 +757,8 @@ class UploadGraphService:
                       },
                       t: {id: elementId(n), name: n.name, properties: properties(n)}}],
                     // 2跳入边
-                    [(m2)-[r2]->(m1)-[r1]->(n:Upload {name: $entity_name}) |
+                    [(m2)-[r2]->(m1)-[r1]->(n:Upload {name: $entity_name})
+                     WHERE ($kb_label IS NULL OR $kb_label IN labels(m1)) |
                      {h: {id: elementId(m2), name: m2.name, properties: properties(m2)},
                       r: {
                         id: elementId(r2),
@@ -722,7 +774,7 @@ class UploadGraphService:
                 RETURN item.h AS h, item.r AS r, item.t AS t
                 LIMIT $limit
                 """
-                results = tx.run(query_str, entity_name=entity_name, limit=limit)
+                results = tx.run(query_str, entity_name=entity_name, limit=limit, kb_label=_kb_label)
 
                 if not results:
                     logger.info(f"未找到实体 {entity_name} 的相关信息")
@@ -747,8 +799,8 @@ class UploadGraphService:
                 return []
 
         try:
-            with self.driver.session() as session:
-                return session.execute_read(query, entity_name, hops, limit)
+            with self.driver.session(database=kgdb_name) as session:
+                return session.execute_read(query, entity_name, hops, limit, kb_label)
 
         except Exception as e:
             logger.error(f"数据库会话异常: {str(e)}")

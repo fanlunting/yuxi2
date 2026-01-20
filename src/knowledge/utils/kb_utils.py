@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import time
 import traceback
 from pathlib import Path
@@ -72,6 +73,35 @@ def validate_file_path(file_path: str, db_id: str = None) -> str:
     except Exception as e:
         logger.error(f"Path validation failed for {file_path}: {e}")
         raise ValueError(f"Invalid file path: {file_path}")
+
+
+def derive_graph_db_name(db_id: str) -> str:
+    """
+    为“每个知识库一个 Neo4j 图谱库名”生成稳定的 Neo4j database 名称。
+
+    约束：
+    - 仅包含 [a-z0-9_-]（其他字符会被替换为 '_'）
+    - 统一小写
+    - 以 'kg_' 前缀开头，避免与知识库 id (常见 'kb_') 混淆
+    """
+    raw = (db_id or "").strip().lower()
+    safe = re.sub(r"[^a-z0-9_-]+", "_", raw).strip("_")
+    if not safe:
+        safe = "unknown"
+    return f"kg_{safe}"
+
+
+def derive_kb_node_label(db_id: str) -> str:
+    """
+    生成用于 Neo4j 节点 label 的知识库标识（每个知识库一个 label）。
+
+    Neo4j label 更适合只用 [a-z0-9_]，这里会将其他字符替换为 '_'。
+    """
+    raw = (db_id or "").strip().lower()
+    safe = re.sub(r"[^a-z0-9_]+", "_", raw).strip("_")
+    if not safe:
+        safe = "unknown"
+    return f"kb_{safe}"
 
 
 def _unescape_separator(separator: str | None) -> str | None:
