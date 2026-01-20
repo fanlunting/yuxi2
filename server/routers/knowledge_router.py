@@ -11,13 +11,18 @@ from starlette.responses import StreamingResponse
 
 from server.services.tasker import TaskContext, tasker
 from server.utils.auth_middleware import get_admin_user
-from src import config, knowledge_base
+from src import config, graph_base, knowledge_base
+from src.knowledge.base import FileStatus
 from src.knowledge.indexing import SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension, process_file_to_markdown
+import os
+
+from src.knowledge.utils.kb_utils import derive_kb_node_label
 from src.knowledge.utils import calculate_content_hash
 from src.models.embed import test_all_embedding_models_status, test_embedding_model_status
 from src.storage.db.models import User
 from src.storage.minio.client import StorageError, aupload_file_to_minio, get_minio_client
 from src.utils import logger
+from src.utils.datetime_utils import utc_isoformat
 
 knowledge = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
@@ -303,14 +308,62 @@ async def add_documents(
                 await context.set_progress(progress, f"[2/2] 解析文件 {idx}/{len(added_files)}")
 
                 try:
-                    # 2. Parse file (PARSING -> PARSED)
-                    file_meta = await knowledge_base.parse_file(db_id, file_id, operator_id=current_user.id)
-                    processed_items.append(file_meta)
-                    parse_success_count += 1
+                    file_type = str(add_file_meta.get("file_type") or "").lower()
+                    # jsonl：走“上传知识图谱”的那一套（后端分流）
+                    if file_type == "jsonl" or str(item).lower().endswith(".jsonl"):
+                        await context.set_message("第二阶段：导入知识图谱(JSONL)")
+
+                        kgdb_name = os.environ.get("NEO4J_DATABASE", "neo4j")
+                        kb_label = derive_kb_node_label(db_id)
+
+                        # 先把文件状态标记为 INDEXING，便于前端展示进度
+                        kb_instance = knowledge_base.get_kb(db_id)
+                        if file_id in kb_instance.files_meta:
+                            kb_instance.files_meta[file_id]["status"] = FileStatus.INDEXING
+                            kb_instance.files_meta[file_id]["updated_at"] = utc_isoformat()
+                            kb_instance._save_metadata()
+
+                        await graph_base.jsonl_file_add_entity(
+                            item,
+                            kgdb_name=kgdb_name,
+                            embed_model_name=None,
+                            batch_size=None,
+                            kb_id=db_id,
+                            kb_label=kb_label,
+                        )
+
+                        # 导入成功：标记为 INDEXED
+                        if file_id in kb_instance.files_meta:
+                            kb_instance.files_meta[file_id]["status"] = FileStatus.INDEXED
+                            kb_instance.files_meta[file_id]["graph_kb_label"] = kb_label
+                            kb_instance.files_meta[file_id]["updated_at"] = utc_isoformat()
+                            kb_instance._save_metadata()
+                            processed_items.append(kb_instance.files_meta[file_id])
+                        else:
+                            processed_items.append({"file_id": file_id, "status": "indexed"})
+                        parse_success_count += 1
+                    else:
+                        # 2. Parse file (PARSING -> PARSED)
+                        file_meta = await knowledge_base.parse_file(db_id, file_id, operator_id=current_user.id)
+                        processed_items.append(file_meta)
+                        parse_success_count += 1
                 except Exception as parse_error:
                     logger.error(f"解析文件失败 {item} (file_id={file_id}): {parse_error}")
                     error_type = "timeout" if isinstance(parse_error, TimeoutError) else "parse_failed"
                     error_msg = "解析超时" if isinstance(parse_error, TimeoutError) else "解析失败"
+                    # jsonl 导图谱失败：落到 error_indexing 更贴近“导入失败”
+                    try:
+                        if str(add_file_meta.get("file_type") or "").lower() == "jsonl" or str(item).lower().endswith(
+                            ".jsonl"
+                        ):
+                            kb_instance = knowledge_base.get_kb(db_id)
+                            if file_id in kb_instance.files_meta:
+                                kb_instance.files_meta[file_id]["status"] = FileStatus.ERROR_INDEXING
+                                kb_instance.files_meta[file_id]["error"] = str(parse_error)
+                                kb_instance.files_meta[file_id]["updated_at"] = utc_isoformat()
+                                kb_instance._save_metadata()
+                    except Exception:  # noqa: BLE001
+                        pass
                     processed_items.append(
                         {
                             "item": item,
@@ -1070,7 +1123,10 @@ async def upload_file(
     ext = os.path.splitext(file.filename)[1].lower()
 
     if ext == ".jsonl":
-        if allow_jsonl is not True or db_id is not None:
+        # jsonl 支持两种场景：
+        # 1) 图谱页面：allow_jsonl=true 且不绑定知识库
+        # 2) 知识库页面：绑定 db_id（后续由后端分流走图谱导入）
+        if allow_jsonl is not True and db_id is None:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
     elif not (is_supported_file_extension(file.filename) or ext == ".zip"):
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")

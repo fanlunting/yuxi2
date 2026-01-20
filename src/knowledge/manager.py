@@ -7,6 +7,7 @@ import tempfile
 from src.knowledge.base import KBNotFoundError, KnowledgeBase
 from src.knowledge.factory import KnowledgeBaseFactory
 from src.utils import logger
+from src.knowledge.utils.kb_utils import derive_kb_node_label
 from src.utils.datetime_utils import coerce_any_to_utc_datetime, utc_isoformat
 
 
@@ -288,6 +289,7 @@ class KnowledgeBaseManager:
                 "kb_type": kb_type,
                 "created_at": utc_isoformat(),
                 "additional_params": kwargs.copy(),
+                "graph_kb_label": derive_kb_node_label(db_id),
             }
             self._save_global_metadata()
 

@@ -41,6 +41,7 @@ class UploadGraphAdapter(GraphAdapter):
 
     async def query_nodes(self, keyword: str, **kwargs) -> dict[str, Any]:
         params = self._normalize_query_params(keyword, kwargs)
+        kb_label = self.config.get("kb_label")
 
         # 如果关键词是 "*" 或者为空，则执行采样查询
         if not params["keyword"] or params["keyword"] == "*":
@@ -48,7 +49,8 @@ class UploadGraphAdapter(GraphAdapter):
             num = kwargs.get("max_nodes", 100)
             raw_results = self._db._get_sample_nodes_with_connections(
                 num=num,
-                label_filter="Upload",
+                label_filter=kb_label or "Upload",
+                database=params.get("kgdb_name", "neo4j"),
             )
         else:
             # 否则执行关键词搜索（使用 service 的查询功能）
@@ -58,6 +60,7 @@ class UploadGraphAdapter(GraphAdapter):
                 kgdb_name=params.get("kgdb_name", "neo4j"),
                 hops=params.get("hops", 2),
                 return_format="graph",
+                kb_label=kb_label,
             )
 
         return self._format_results(raw_results)
@@ -100,6 +103,12 @@ class UploadGraphAdapter(GraphAdapter):
         kgdb_name = self.config.get("kgdb_name", "neo4j")
         info = self.service.get_graph_info(graph_name=kgdb_name)
         return info.get("labels", []) if info else []
+
+    async def get_stats(self, **kwargs) -> dict[str, Any]:
+        """获取统计信息（按知识库 label 过滤）"""
+        kgdb_name = self.config.get("kgdb_name", "neo4j")
+        kb_label = self.config.get("kb_label")
+        return self._db._get_graph_stats(label_filter=kb_label, database=kgdb_name)
 
     def _normalize_query_params(self, keyword: str, kwargs: dict) -> dict[str, Any]:
         # Map max_depth to hops if present

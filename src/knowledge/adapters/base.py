@@ -236,7 +236,9 @@ class BaseNeo4jAdapter:
         # 合并属性（优先保留原字典中的 id, name, type 等核心字段）
         return {**props, **data}
 
-    def _get_sample_nodes_with_connections(self, num: int = 50, label_filter: str = None) -> dict[str, list]:
+    def _get_sample_nodes_with_connections(
+        self, num: int = 50, label_filter: str | None = None, database: str | None = None
+    ) -> dict[str, list]:
         """
         获取连通的节点子图，优先返回连通的节点
         Args:
@@ -377,10 +379,10 @@ class BaseNeo4jAdapter:
 
                 return formatted_results
 
-        with self.driver.session() as session:
+        with self.driver.session(database=database) as session:
             return session.execute_read(query, num)
 
-    def _get_graph_stats(self, label_filter: str = None) -> dict[str, Any]:
+    def _get_graph_stats(self, label_filter: str | None = None, database: str | None = None) -> dict[str, Any]:
         """
         获取图统计信息
         Args:
@@ -419,13 +421,13 @@ class BaseNeo4jAdapter:
             }
 
         try:
-            with self.driver.session() as session:
+            with self.driver.session(database=database) as session:
                 return session.execute_read(query)
         except Exception as e:
             logger.error(f"Failed to get graph stats: {e}")
             return {"total_nodes": 0, "total_edges": 0, "entity_types": []}
 
-    def _get_all_labels(self, exclude_system_labels: bool = True) -> list[str]:
+    def _get_all_labels(self, exclude_system_labels: bool = True, database: str | None = None) -> list[str]:
         """
         获取所有标签
         Args:
@@ -444,7 +446,7 @@ class BaseNeo4jAdapter:
             return labels
 
         try:
-            with self.driver.session() as session:
+            with self.driver.session(database=database) as session:
                 return session.execute_read(query)
         except Exception as e:
             logger.error(f"Failed to get labels: {e}")

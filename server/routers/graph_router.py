@@ -183,27 +183,9 @@ async def get_graph_stats(
     获取图谱统计信息
     """
     try:
-        # 使用适配器的统计信息 (适用于 kb_ 开头的数据库和 LightRAG 数据库)
-        if db_id.startswith("kb_") or knowledge_base.is_lightrag_database(db_id):
-            adapter = await _get_graph_adapter(db_id)
-            stats_data = await adapter.get_stats()
-            return {"success": True, "data": stats_data}
-        else:
-            # Neo4j stats (直接管理的图谱)
-            info = graph_base.get_graph_info(graph_name=db_id)
-            if not info:
-                raise HTTPException(status_code=404, detail="Graph info not found")
-
-            return {
-                "success": True,
-                "data": {
-                    "total_nodes": info.get("entity_count", 0),
-                    "total_edges": info.get("relationship_count", 0),
-                    # Neo4j info currently returns 'labels' list, not counts per label.
-                    # Improving this would require updating GraphDatabase.get_graph_info
-                    "entity_types": [{"type": label, "count": "N/A"} for label in info.get("labels", [])],
-                },
-            }
+        adapter = await _get_graph_adapter(db_id)
+        stats_data = await adapter.get_stats()
+        return {"success": True, "data": stats_data}
 
     except Exception as e:
         logger.error(f"Failed to get stats: {e}")
@@ -276,7 +258,12 @@ async def add_neo4j_entities(
     """通过JSONL文件添加图谱实体到Neo4j（只接受 MinIO URL）"""
     try:
         # 服务层会验证 URL 并从 MinIO 下载文件
-        await graph_base.jsonl_file_add_entity(file_path, kgdb_name, embed_model_name, batch_size)
+        await graph_base.jsonl_file_add_entity(
+            file_path,
+            kgdb_name=kgdb_name,
+            embed_model_name=embed_model_name,
+            batch_size=batch_size,
+        )
         return {"success": True, "message": "实体添加成功", "status": "success"}
     except StorageError as e:
         # MinIO 验证或下载错误
