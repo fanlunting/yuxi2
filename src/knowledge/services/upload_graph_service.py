@@ -27,6 +27,9 @@ class UploadGraphService:
         # 每个 Neo4j database 维护一份独立的图谱配置（embed_model 等）
         self._base_dir = os.path.join(config.save_dir, "knowledge_graph")
         os.makedirs(self._base_dir, exist_ok=True)
+        self._default_db_name = os.environ.get("NEO4J_DATABASE", "neo4j")
+        # Neo4j Community 不支持 CREATE DATABASE；这里做一次能力探测/缓存，并在不支持时自动降级到 default db
+        self._supports_multidb: bool | None = None
         self._embed_model_name_by_db: dict[str, str | None] = {}
         self._is_initialized_from_file_by_db: dict[str, bool] = {}
         self._embed_model_cache: dict[str, Any] = {}
@@ -57,7 +60,7 @@ class UploadGraphService:
         return self.connection.is_running()
 
     def create_graph_database(self, kgdb_name):
-        """创建新的数据库，如果已存在则返回已有数据库的名称"""
+        """创建新的数据库（需要 Neo4j 支持多数据库），如果已存在则返回"""
         assert self.driver is not None, "Database is not connected"
         # Neo4j 多数据库管理需要在 system 库执行
         with self.driver.session(database="system") as session:
@@ -69,6 +72,39 @@ class UploadGraphService:
 
             session.run(f"CREATE DATABASE `{kgdb_name}`")  # type: ignore[no-untyped-call]
             return kgdb_name
+
+    def _resolve_kgdb_name(self, requested: str | None) -> str:
+        """解析目标 Neo4j database 名称；不支持多数据库时降级到默认库。"""
+        kgdb_name = (requested or "").strip() or self._default_db_name
+        if kgdb_name == self._default_db_name:
+            return kgdb_name
+
+        # 已确认不支持多数据库：直接降级
+        if self._supports_multidb is False:
+            return self._default_db_name
+
+        # 未探测过：尝试创建（或至少确认支持）
+        if self._supports_multidb is None:
+            try:
+                self.create_graph_database(kgdb_name)
+                self._supports_multidb = True
+                return kgdb_name
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                # Neo4j Community 常见错误：UnsupportedAdministrationCommand
+                if "UnsupportedAdministrationCommand" in msg or "Unsupported administration command" in msg:
+                    logger.warning("Neo4j does not support multi-database; falling back to default database")
+                    self._supports_multidb = False
+                    return self._default_db_name
+                # 其他异常：保持原样抛出，便于排查
+                raise
+
+        # 已确认支持：确保库存在
+        if self._supports_multidb:
+            self.create_graph_database(kgdb_name)
+            return kgdb_name
+
+        return self._default_db_name
 
     def _get_graph_work_dir(self, kgdb_name: str) -> str:
         work_dir = os.path.join(self._base_dir, kgdb_name)
@@ -86,8 +122,9 @@ class UploadGraphService:
         """确保连接可用并确保数据库存在"""
         if self.status == "closed":
             self.start()
-        self.create_graph_database(kgdb_name)
-        self._ensure_graph_state_loaded(kgdb_name)
+        resolved = self._resolve_kgdb_name(kgdb_name)
+        self._ensure_graph_state_loaded(resolved)
+        return resolved
 
     async def jsonl_file_add_entity(
         self,
@@ -101,8 +138,7 @@ class UploadGraphService:
         """从JSONL文件添加实体三元组到Neo4j"""
         assert self.driver is not None, "Database is not connected"
         self.connection.status = "processing"
-        kgdb_name = kgdb_name or "neo4j"
-        self.use_database(kgdb_name)  # 切换到指定数据库
+        kgdb_name = self.use_database(kgdb_name or self._default_db_name)
         logger.info(f"Start adding entity to {kgdb_name} with {file_path}")
 
         # 检测 file_path 是否是 URL
@@ -165,7 +201,7 @@ class UploadGraphService:
     ):
         """添加实体三元组"""
         assert self.driver is not None, "Database is not connected"
-        self.use_database(kgdb_name)
+        kgdb_name = self.use_database(kgdb_name)
 
         def _index_exists(tx, index_name):
             """检查索引是否存在"""
@@ -360,7 +396,7 @@ class UploadGraphService:
             int: 成功添加嵌入向量的节点数量
         """
         assert self.driver is not None, "Database is not connected"
-        self.use_database(kgdb_name)
+        kgdb_name = self.use_database(kgdb_name)
 
         # 如果node_names为None，则获取所有没有嵌入向量的节点
         if node_names is None:
@@ -384,7 +420,7 @@ class UploadGraphService:
     def delete_entity(self, entity_name=None, kgdb_name="neo4j"):
         """删除数据库中的指定实体三元组, 参数entity_name为空则删除全部实体"""
         assert self.driver is not None, "Database is not connected"
-        self.use_database(kgdb_name)
+        kgdb_name = self.use_database(kgdb_name)
         with self.driver.session(database=kgdb_name) as session:
             if entity_name:
                 session.execute_write(self._delete_specific_entity, entity_name)
@@ -412,7 +448,7 @@ class UploadGraphService:
             list: 没有嵌入向量的节点列表
         """
         assert self.driver is not None, "Database is not connected"
-        self.use_database(kgdb_name)
+        kgdb_name = self.use_database(kgdb_name)
 
         def query(tx):
             result = tx.run("""
@@ -427,7 +463,7 @@ class UploadGraphService:
 
     def get_graph_info(self, graph_name="neo4j"):
         assert self.driver is not None, "Database is not connected"
-        self.use_database(graph_name)
+        graph_name = self.use_database(graph_name)
 
         def query(tx):
             # 只统计包含Entity标签的节点
