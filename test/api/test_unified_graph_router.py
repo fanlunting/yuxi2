@@ -52,6 +52,18 @@ async def test_get_subgraph_neo4j(test_client, admin_headers):
     assert "edges" in data
     assert isinstance(data["nodes"], list)
 
+    # Ensure common "field: value" search patterns from UI don't break.
+    response = await test_client.get(
+        "/api/graph/subgraph",
+        params={"db_id": "neo4j", "node_label": "name: NonExistentEntity", "max_nodes": 10},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert "nodes" in payload["data"]
+    assert "edges" in payload["data"]
+
 
 async def test_get_subgraph_lightrag(test_client, admin_headers, knowledge_database):
     """Test unified subgraph query for LightRAG."""
@@ -65,6 +77,17 @@ async def test_get_subgraph_lightrag(test_client, admin_headers, knowledge_datab
     data = payload["data"]
     assert "nodes" in data
     assert "edges" in data
+
+    response = await test_client.get(
+        "/api/graph/subgraph",
+        params={"db_id": db_id, "node_label": "entity_id: NonExistentEntity", "max_nodes": 10},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert "nodes" in payload["data"]
+    assert "edges" in payload["data"]
 
 
 async def test_get_stats_neo4j(test_client, admin_headers):
