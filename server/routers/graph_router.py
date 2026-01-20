@@ -131,13 +131,23 @@ async def get_subgraph(
         max_nodes: 返回最大节点数
     """
     try:
-        logger.info(f"Querying subgraph - db_id: {db_id}, label: {node_label}")
+        # 前端可能会传入形如 "name: xxx" / "name：xxx" 的查询串
+        keyword = node_label
+        if isinstance(keyword, str) and keyword != "*":
+            for sep in (":", "："):
+                if sep in keyword:
+                    k, v = keyword.split(sep, 1)
+                    if k.strip().lower() in {"name", "entity", "entity_id", "label", "keyword"} and v.strip():
+                        keyword = v.strip()
+                    break
+
+        logger.info(f"Querying subgraph - db_id: {db_id}, label: {node_label}, keyword: {keyword}")
 
         adapter = await _get_graph_adapter(db_id)
 
         # 统一查询参数 - 适配器会根据自己的配置处理这些参数
         query_kwargs = {
-            "keyword": node_label,
+            "keyword": keyword,
             "max_depth": max_depth,
             "max_nodes": max_nodes,
         }
