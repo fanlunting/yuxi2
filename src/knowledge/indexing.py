@@ -31,6 +31,7 @@ SUPPORTED_FILE_EXTENSIONS: tuple[str, ...] = (
     ".html",
     ".htm",
     ".json",
+    ".jsonl",
     ".csv",
     ".xls",
     ".xlsx",

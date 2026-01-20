@@ -1,6 +1,7 @@
 from .base import GraphAdapter
 from .lightrag import LightRAGGraphAdapter
 from .upload import UploadGraphAdapter
+from src.knowledge.utils.kb_utils import derive_graph_db_name, derive_kb_node_label
 
 
 class GraphAdapterFactory:
@@ -45,17 +46,12 @@ class GraphAdapterFactory:
         Returns:
             图谱类型: "lightrag" (LightRAG) 或 "upload"
         """
-        # 1. 首先检查是否是 LightRAG 数据库 (通过知识库管理器)
-        if knowledge_base_manager:
-            db_info = knowledge_base_manager.get_database_info(db_id)
-            if db_info:  # 有信息表示是 LightRAG 数据库
+        # 1. 仅当知识库类型本身是 lightrag 时，才视为 lightrag 图谱
+        if knowledge_base_manager and hasattr(knowledge_base_manager, "is_lightrag_database"):
+            if knowledge_base_manager.is_lightrag_database(db_id):
                 return "lightrag"
 
-        # 2. 检查 kb_ 前缀作为备用方案
-        if db_id.startswith("kb_"):
-            return "lightrag"
-
-        # 3. 默认为 Upload 类型
+        # 2. 其他情况默认为 Upload 类型（包括 milvus 等）
         return "upload"
 
     @classmethod
@@ -77,8 +73,16 @@ class GraphAdapterFactory:
             # LightRAG 类型，使用 kb_id 作为配置
             return cls.create_adapter("lightrag", config={"kb_id": db_id})
         else:
-            # Upload 类型，使用 kgdb_name 作为配置
-            return cls.create_adapter("upload", graph_db_instance=graph_db_instance, config={"kgdb_name": db_id})
+            # Upload 类型：每个知识库一个 Neo4j database + 一个 kb_label
+            return cls.create_adapter(
+                "upload",
+                graph_db_instance=graph_db_instance,
+                config={
+                    "kgdb_name": derive_graph_db_name(db_id),
+                    "kb_label": derive_kb_node_label(db_id),
+                    "kb_id": db_id,
+                },
+            )
 
     @classmethod
     def create_adapter_for_db_id(cls, db_id: str, knowledge_base_manager=None, graph_db_instance=None) -> GraphAdapter:
