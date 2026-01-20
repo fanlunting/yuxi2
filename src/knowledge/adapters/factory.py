@@ -1,7 +1,9 @@
 from .base import GraphAdapter
 from .lightrag import LightRAGGraphAdapter
 from .upload import UploadGraphAdapter
-from src.knowledge.utils.kb_utils import derive_graph_db_name, derive_kb_node_label
+import os
+
+from src.knowledge.utils.kb_utils import derive_kb_node_label
 
 
 class GraphAdapterFactory:
@@ -73,12 +75,12 @@ class GraphAdapterFactory:
             # LightRAG 类型，使用 kb_id 作为配置
             return cls.create_adapter("lightrag", config={"kb_id": db_id})
         else:
-            # Upload 类型：每个知识库一个 Neo4j database + 一个 kb_label
+            # Upload 类型：Neo4j Community 默认单库，用 kb_label 做隔离
             return cls.create_adapter(
                 "upload",
                 graph_db_instance=graph_db_instance,
                 config={
-                    "kgdb_name": derive_graph_db_name(db_id),
+                    "kgdb_name": os.environ.get("NEO4J_DATABASE", "neo4j"),
                     "kb_label": derive_kb_node_label(db_id),
                     "kb_id": db_id,
                 },

@@ -24,14 +24,14 @@ class UploadGraphService:
     def __init__(self, db_manager: Neo4jConnectionManager = None):
         self.connection = db_manager or Neo4jConnectionManager()
         self.files = []
-        # 每个 Neo4j database 维护一份独立的图谱配置（embed_model 等）
+        # Neo4j Community：不支持多 database（CREATE DATABASE）。
+        # 本项目“每个知识库隔离”使用 label/属性（kb_label/kb_id）实现，统一写入默认库。
         self._base_dir = os.path.join(config.save_dir, "knowledge_graph")
         os.makedirs(self._base_dir, exist_ok=True)
         self._default_db_name = os.environ.get("NEO4J_DATABASE", "neo4j")
-        # Neo4j Community 不支持 CREATE DATABASE；这里做一次能力探测/缓存，并在不支持时自动降级到 default db
-        self._supports_multidb: bool | None = None
-        self._embed_model_name_by_db: dict[str, str | None] = {}
-        self._is_initialized_from_file_by_db: dict[str, bool] = {}
+        # 默认库维度的图谱配置（embed_model 等）
+        self._embed_model_name_by_db: dict[str, str | None] = {self._default_db_name: None}
+        self._is_initialized_from_file_by_db: dict[str, bool] = {self._default_db_name: False}
         self._embed_model_cache: dict[str, Any] = {}
 
     @property
@@ -59,51 +59,9 @@ class UploadGraphService:
         """检查图数据库是否正在运行"""
         return self.connection.is_running()
 
-    def create_graph_database(self, kgdb_name):
-        """创建新的数据库（需要 Neo4j 支持多数据库），如果已存在则返回"""
-        assert self.driver is not None, "Database is not connected"
-        # Neo4j 多数据库管理需要在 system 库执行
-        with self.driver.session(database="system") as session:
-            existing = session.run("SHOW DATABASES YIELD name RETURN collect(name) AS names").single()
-            existing_db_names = set(existing["names"] or []) if existing else set()
-
-            if kgdb_name in existing_db_names:
-                return kgdb_name
-
-            session.run(f"CREATE DATABASE `{kgdb_name}`")  # type: ignore[no-untyped-call]
-            return kgdb_name
-
     def _resolve_kgdb_name(self, requested: str | None) -> str:
-        """解析目标 Neo4j database 名称；不支持多数据库时降级到默认库。"""
-        kgdb_name = (requested or "").strip() or self._default_db_name
-        if kgdb_name == self._default_db_name:
-            return kgdb_name
-
-        # 已确认不支持多数据库：直接降级
-        if self._supports_multidb is False:
-            return self._default_db_name
-
-        # 未探测过：尝试创建（或至少确认支持）
-        if self._supports_multidb is None:
-            try:
-                self.create_graph_database(kgdb_name)
-                self._supports_multidb = True
-                return kgdb_name
-            except Exception as e:  # noqa: BLE001
-                msg = str(e)
-                # Neo4j Community 常见错误：UnsupportedAdministrationCommand
-                if "UnsupportedAdministrationCommand" in msg or "Unsupported administration command" in msg:
-                    logger.warning("Neo4j does not support multi-database; falling back to default database")
-                    self._supports_multidb = False
-                    return self._default_db_name
-                # 其他异常：保持原样抛出，便于排查
-                raise
-
-        # 已确认支持：确保库存在
-        if self._supports_multidb:
-            self.create_graph_database(kgdb_name)
-            return kgdb_name
-
+        """Neo4j Community：始终使用默认库，不创建新库。"""
+        _ = requested  # keep signature stable
         return self._default_db_name
 
     def _get_graph_work_dir(self, kgdb_name: str) -> str:
@@ -119,7 +77,7 @@ class UploadGraphService:
         self.load_graph_info(graph_name=kgdb_name)
 
     def use_database(self, kgdb_name: str = "neo4j"):
-        """确保连接可用并确保数据库存在"""
+        """确保连接可用（社区版不创建新库）"""
         if self.status == "closed":
             self.start()
         resolved = self._resolve_kgdb_name(kgdb_name)
@@ -484,8 +442,8 @@ class UploadGraphService:
                 "triples_count": triples_count,
                 "labels": labels,
                 "status": self.status,
-                "embed_model_name": self.embed_model_name,
-                "embed_model_configurable": not self.is_initialized_from_file,
+                "embed_model_name": self._embed_model_name_by_db.get(graph_name),
+                "embed_model_configurable": not self._is_initialized_from_file_by_db.get(graph_name, False),
                 "unindexed_node_count": len(self.query_nodes_without_embedding(graph_name)),
             }
 

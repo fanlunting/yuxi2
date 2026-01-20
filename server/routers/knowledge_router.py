@@ -14,7 +14,9 @@ from server.utils.auth_middleware import get_admin_user
 from src import config, graph_base, knowledge_base
 from src.knowledge.base import FileStatus
 from src.knowledge.indexing import SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension, process_file_to_markdown
-from src.knowledge.utils.kb_utils import derive_graph_db_name, derive_kb_node_label
+import os
+
+from src.knowledge.utils.kb_utils import derive_kb_node_label
 from src.knowledge.utils import calculate_content_hash
 from src.models.embed import test_all_embedding_models_status, test_embedding_model_status
 from src.storage.db.models import User
@@ -311,7 +313,7 @@ async def add_documents(
                     if file_type == "jsonl" or str(item).lower().endswith(".jsonl"):
                         await context.set_message("第二阶段：导入知识图谱(JSONL)")
 
-                        kgdb_name = derive_graph_db_name(db_id)
+                        kgdb_name = os.environ.get("NEO4J_DATABASE", "neo4j")
                         kb_label = derive_kb_node_label(db_id)
 
                         # 先把文件状态标记为 INDEXING，便于前端展示进度
@@ -333,7 +335,6 @@ async def add_documents(
                         # 导入成功：标记为 INDEXED
                         if file_id in kb_instance.files_meta:
                             kb_instance.files_meta[file_id]["status"] = FileStatus.INDEXED
-                            kb_instance.files_meta[file_id]["graph_db_name"] = kgdb_name
                             kb_instance.files_meta[file_id]["graph_kb_label"] = kb_label
                             kb_instance.files_meta[file_id]["updated_at"] = utc_isoformat()
                             kb_instance._save_metadata()

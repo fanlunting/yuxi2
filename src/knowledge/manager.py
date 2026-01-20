@@ -6,7 +6,7 @@ import tempfile
 
 from src.knowledge.base import KBNotFoundError, KnowledgeBase
 from src.knowledge.factory import KnowledgeBaseFactory
-from src.knowledge.utils.kb_utils import derive_graph_db_name, derive_kb_node_label
+from src.knowledge.utils.kb_utils import derive_kb_node_label
 from src.utils import logger
 from src.utils.datetime_utils import coerce_any_to_utc_datetime, utc_isoformat
 
@@ -289,8 +289,7 @@ class KnowledgeBaseManager:
                 "kb_type": kb_type,
                 "created_at": utc_isoformat(),
                 "additional_params": kwargs.copy(),
-                # 每个知识库一个 Neo4j 图谱库名 + 节点 label（用于 Upload/jsonl 图谱导入）
-                "graph_db_name": derive_graph_db_name(db_id),
+                # 每个知识库一个 label（用于 Upload/jsonl 图谱导入隔离）
                 "graph_kb_label": derive_kb_node_label(db_id),
             }
             self._save_global_metadata()
