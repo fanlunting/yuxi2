@@ -34,6 +34,17 @@ class UploadGraphService:
         self._is_initialized_from_file_by_db: dict[str, bool] = {self._default_db_name: False}
         self._embed_model_cache: dict[str, Any] = {}
 
+    # -------------------------------------------------------------------------
+    # Backward-compatible attributes (older code might still reference them)
+    # -------------------------------------------------------------------------
+    @property
+    def embed_model_name(self) -> str | None:
+        return self._embed_model_name_by_db.get(self._default_db_name)
+
+    @property
+    def is_initialized_from_file(self) -> bool:
+        return bool(self._is_initialized_from_file_by_db.get(self._default_db_name, False))
+
     @property
     def driver(self):
         """获取数据库驱动"""
