@@ -14,7 +14,6 @@ from server.utils.auth_middleware import get_admin_user
 from src import config, graph_base, knowledge_base
 from src.knowledge.base import FileStatus
 from src.knowledge.indexing import SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension, process_file_to_markdown
-import os
 
 from src.knowledge.utils.kb_utils import derive_kb_node_label
 from src.knowledge.utils import calculate_content_hash

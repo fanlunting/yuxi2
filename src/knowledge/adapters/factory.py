@@ -1,9 +1,10 @@
-from .base import GraphAdapter
-from .lightrag import LightRAGGraphAdapter
-from .upload import UploadGraphAdapter
 import os
 
 from src.knowledge.utils.kb_utils import derive_kb_node_label
+
+from .base import GraphAdapter
+from .lightrag import LightRAGGraphAdapter
+from .upload import UploadGraphAdapter
 
 
 class GraphAdapterFactory:

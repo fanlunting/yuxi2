@@ -2,8 +2,8 @@ import json
 import os
 import traceback
 import warnings
-from urllib.parse import urlparse
 from typing import Any
+from urllib.parse import urlparse
 
 from src import config
 from src.knowledge.adapters.base import Neo4jConnectionManager
@@ -463,7 +463,9 @@ class UploadGraphService:
                     # 添加时间戳
                     graph_info["last_updated"] = utc_isoformat()
                     graph_info["embed_model_name"] = self._embed_model_name_by_db.get(graph_name)
-                    graph_info["embed_model_configurable"] = not self._is_initialized_from_file_by_db.get(graph_name, False)
+                    graph_info["embed_model_configurable"] = not self._is_initialized_from_file_by_db.get(
+                        graph_name, False
+                    )
                     return graph_info
             else:
                 logger.warning(f"图数据库未连接或未运行:{self.status=}")
